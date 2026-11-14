@@ -5,10 +5,13 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
 import sys
+import threading
+import time
 
 from . import config
 
@@ -23,6 +26,65 @@ def setup_logging(acc_id: str) -> str:
     root.setLevel(logging.INFO)
     logging.getLogger("urllib3").setLevel(logging.WARNING)
     return path
+
+
+def run_dir() -> str:
+    return config.local_dir("run")
+
+
+def status_path(acc_id: str) -> str:
+    return os.path.join(run_dir(), f"{acc_id}.status")
+
+
+def stop_path(acc_id: str) -> str:
+    return os.path.join(run_dir(), f"{acc_id}.stop")
+
+
+def _write_status(acc_id: str, data: dict):
+    tmp = status_path(acc_id) + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+    os.replace(tmp, status_path(acc_id))
+
+
+def _service_threads(acc_id: str, fs, log):
+    """Статус для окна программы, догрузка после сбоя, мягкое отключение."""
+    state = {"stopping": False}
+
+    def status_loop():
+        while True:
+            try:
+                st = fs.status()
+                st["stopping"] = state["stopping"]
+                st["time"] = time.time()
+                _write_status(acc_id, st)
+            except Exception:  # noqa: BLE001
+                pass
+            time.sleep(1)
+
+    def stop_loop():
+        while not os.path.exists(stop_path(acc_id)):
+            time.sleep(0.5)
+        state["stopping"] = True
+        log.info("Запрошено отключение: отправляю несохранённые изменения")
+        failed = fs.upload_all()
+        log.info("Отключение (ошибок загрузки: %d)", failed)
+        for p in (stop_path(acc_id), status_path(acc_id)):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+        logging.shutdown()
+        os._exit(0)   # WinFsp сам отключит диск при завершении процесса
+
+    def recover():
+        time.sleep(3)
+        if fs.pending():
+            n = fs.recover_pending()
+            log.info("Догружено после прошлого сбоя: %d", n)
+
+    for fn in (status_loop, stop_loop, recover):
+        threading.Thread(target=fn, daemon=True, name=fn.__name__).start()
 
 
 def run(acc_id: str) -> int:
@@ -53,7 +115,14 @@ def run(acc_id: str) -> int:
         log.error("Не удалось подключиться к облаку: %s", e)
         return 4
 
-    fs = CloudFS(provider, config.local_dir("cache", acc_id))
+    for p in (stop_path(acc_id), status_path(acc_id)):
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+    fs = CloudFS(provider, config.local_dir("cache", acc_id),
+                 defer_large=acc.get("defer_large", True))
+    _service_threads(acc_id, fs, log)
     letter = (acc.get("letter") or "").strip(":").upper()
     mountpoint = f"{letter}:" if letter else config.local_dir("mnt", acc_id)
     volname = (acc.get("name") or provider.title)[:32]

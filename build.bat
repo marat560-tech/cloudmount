@@ -5,7 +5,9 @@ cd /d "%~dp0"
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt pyinstaller || goto :err
 python -m PyInstaller --noconfirm --onefile --noconsole --name CloudMount ^
-  --hidden-import pystray._win32 --collect-submodules cloudmount main.py || goto :err
+  --icon assets\icon.ico --add-data "assets;assets" ^
+  --hidden-import pystray._win32 --hidden-import mfusepy ^
+  --collect-submodules cloudmount main.py || goto :err
 echo.
 echo Готово: dist\CloudMount.exe
 pause

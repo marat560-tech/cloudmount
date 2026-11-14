@@ -14,11 +14,11 @@ import errno
 import functools
 import logging
 import os
-import shutil
+import json
 import stat
-import tempfile
 import threading
 import time
+import uuid
 from collections import OrderedDict
 
 from .fusecompat import FuseOSError, Operations
@@ -29,6 +29,7 @@ log = logging.getLogger(__name__)
 BLOCK = 4 * 1024 * 1024          # размер блока для чтения по Range
 MAX_BLOCKS = 16                  # блоков в памяти на один открытый файл
 SMALL_FILE = 8 * 1024 * 1024     # файлы меньше — скачиваем целиком
+DEFER_MIN = 64 * 1024 * 1024     # файлы больше — загружаем только при закрытии
 BAD_CHARS = set('\\/:*?"<>|') | {chr(i) for i in range(32)}
 ROOT = Entry("", True)
 
@@ -61,8 +62,44 @@ def op(fn):
     return wrapper
 
 
+class ProgressReader:
+    """Обёртка файла для загрузки: считает отправленные байты (для статуса)."""
+
+    def __init__(self, f, size: int, cb):
+        self.f, self.size, self.cb, self.pos = f, size, cb, 0
+
+    def __len__(self):
+        return self.size
+
+    def read(self, n=-1):
+        b = self.f.read(n)
+        self.pos += len(b)
+        self.cb(self.pos)
+        return b
+
+    def seek(self, off, whence=0):
+        r = self.f.seek(off, whence)
+        self.pos = self.f.tell()
+        return r
+
+    def tell(self):
+        return self.f.tell()
+
+    def __iter__(self):
+        while True:
+            b = self.read(1 << 20)
+            if not b:
+                return
+            yield b
+
+
 class FileState:
-    """Открытый файл (общий для всех дескрипторов одного пути)."""
+    """Открытый файл (общий для всех дескрипторов одного пути).
+
+    Локальная копия — обычный файл в кэше. Пока в ней есть незагруженные изменения,
+    рядом лежит <id>.json с путём в облаке: если программа или Windows упадут,
+    при следующем подключении изменения догрузятся автоматически.
+    """
 
     def __init__(self, fs: "CloudFS", path: str, entry: Entry | None, new: bool = False):
         self.fs = fs
@@ -73,23 +110,65 @@ class FileState:
         self.lock = threading.RLock()
         self.refs = 0
         self.tmp = None
-        self.dirty = new
+        self.tmp_id = None
+        self.dirty = False
         self.is_new = new          # ещё нет на сервере
         self.deleted = False
         self.blocks: OrderedDict[int, bytes] = OrderedDict()
         self.ctx: dict = {}        # служебные данные провайдера (ссылки на скачивание)
         if new:
             self.tmp = self._new_tmp()
+            self._set_dirty()
+
+    @classmethod
+    def from_pending(cls, fs: "CloudFS", tmp_id: str, path: str, entry: Entry | None):
+        st = cls(fs, path, entry, new=entry is None)
+        if st.tmp is not None:
+            st._discard_tmp()
+        st.tmp_id = tmp_id
+        st.tmp = open(fs._tmp_path(tmp_id), "r+b")
+        st.size = st.tmp.seek(0, os.SEEK_END)
+        st.dirty = True
+        st.mtime = time.time()
+        return st
 
     @property
     def name(self) -> str:
         return split(self.path)[1]
 
+    @property
+    def deferred(self) -> bool:
+        """Большие файлы (контейнеры VeraCrypt, образы) грузим только при закрытии."""
+        return self.fs.defer_large and self.size >= DEFER_MIN
+
     def view(self) -> Entry:
         return Entry(self.name, False, self.size, self.mtime, id=self.entry.id)
 
     def _new_tmp(self):
-        return tempfile.TemporaryFile(dir=self.fs.cache_dir, prefix="cm_")
+        self.tmp_id = uuid.uuid4().hex
+        return open(self.fs._tmp_path(self.tmp_id), "w+b")
+
+    def _write_meta(self):
+        meta = {"path": self.path, "time": time.time()}
+        with open(self.fs._meta_path(self.tmp_id), "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False)
+
+    def _set_dirty(self):
+        if not self.dirty:
+            self.dirty = True
+            self._write_meta()
+
+    def _discard_tmp(self):
+        if self.tmp is not None:
+            self.tmp.close()
+            self.tmp = None
+        if self.tmp_id:
+            for p in (self.fs._tmp_path(self.tmp_id), self.fs._meta_path(self.tmp_id)):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+            self.tmp_id = None
 
     def _materialize(self, download: bool = True):
         if self.tmp is not None:
@@ -105,7 +184,8 @@ class FileState:
             elif not download:
                 self.size = 0
         except BaseException:
-            tmp.close()
+            self.tmp = tmp
+            self._discard_tmp()
             raise
         self.tmp = tmp
         self.blocks.clear()
@@ -152,7 +232,7 @@ class FileState:
             self.tmp.seek(offset)
             self.tmp.write(data)
             self.size = max(self.size, offset + len(data))
-            self.dirty = True
+            self._set_dirty()
             self.mtime = time.time()
             return len(data)
 
@@ -161,8 +241,15 @@ class FileState:
             self._materialize(download=length > 0)
             self.tmp.truncate(length)
             self.size = length
-            self.dirty = True
+            self._set_dirty()
             self.mtime = time.time()
+
+    def sync_local(self):
+        """Сохранить изменения на локальный диск (без отправки в облако)."""
+        with self.lock:
+            if self.tmp is not None:
+                self.tmp.flush()
+                os.fsync(self.tmp.fileno())
 
     def upload(self):
         with self.lock:
@@ -171,10 +258,20 @@ class FileState:
             self.tmp.flush()
             self.tmp.seek(0)
             log.info("Загрузка %s (%d байт)", self.path, self.size)
-            ent = self.fs.p.upload(self.path, None if self.is_new else self.entry,
-                                   self.tmp, self.size)
+            self.fs._progress(self.name, 0, self.size)
+            reader = ProgressReader(self.tmp, self.size,
+                                    lambda n: self.fs._progress(self.name, n, self.size))
+            try:
+                ent = self.fs.p.upload(self.path, None if self.is_new else self.entry,
+                                       reader, self.size)
+            finally:
+                self.fs._progress(None, 0, 0)
             self.dirty = False
             self.is_new = False
+            try:
+                os.remove(self.fs._meta_path(self.tmp_id))
+            except OSError:
+                pass
             if ent is None:
                 ent = Entry(self.name, False, self.size, time.time(), id=self.entry.id)
             ent.name = self.name
@@ -182,33 +279,30 @@ class FileState:
             self.mtime = ent.mtime or time.time()
             self.ctx.clear()
             self.fs._cache_put(self.path, self.entry)
-
-    def save_failed_copy(self) -> str | None:
-        """Если загрузка не удалась — сохраняем копию, чтобы данные не пропали."""
-        with self.lock:
-            if self.tmp is None:
-                return None
-            d = os.path.join(self.fs.cache_dir, "..", "failed_uploads")
-            os.makedirs(d, exist_ok=True)
-            dst = os.path.join(d, time.strftime("%Y%m%d-%H%M%S_") + self.name)
-            self.tmp.seek(0)
-            with open(dst, "wb") as f:
-                shutil.copyfileobj(self.tmp, f)
-            return os.path.abspath(dst)
+            log.info("Загружено: %s", self.path)
 
     def close(self):
+        """Закрыть локальную копию. Незагруженные изменения остаются для догрузки."""
         with self.lock:
-            if self.tmp is not None:
-                self.tmp.close()
-                self.tmp = None
+            if self.dirty and not self.deleted:
+                if self.tmp is not None:
+                    self.tmp.close()
+                    self.tmp = None
+                log.warning("%s: изменения сохранены локально и будут загружены позже", self.path)
+            else:
+                self._discard_tmp()
             self.blocks.clear()
 
 
 class CloudFS(Operations):
-    def __init__(self, provider, cache_dir: str, dir_ttl: float = 60.0):
+    def __init__(self, provider, cache_dir: str, dir_ttl: float = 60.0,
+                 defer_large: bool = True):
         self.p = provider
         self.cache_dir = cache_dir
         os.makedirs(cache_dir, exist_ok=True)
+        self.defer_large = defer_large
+        self.upload_state = (None, 0, 0)          # (имя, отправлено, всего)
+        self._clean_cache()
         self.ttl = dir_ttl
         self.lock = threading.RLock()
         self.dirs: dict[str, tuple[float, dict[str, Entry]]] = {}
@@ -219,6 +313,119 @@ class CloudFS(Operations):
         self.started = time.time()
         self.uid = os.getuid() if hasattr(os, "getuid") else 0
         self.gid = os.getgid() if hasattr(os, "getgid") else 0
+
+    # ---------- локальные копии ----------
+    def _tmp_path(self, tmp_id: str) -> str:
+        return os.path.join(self.cache_dir, tmp_id + ".tmp")
+
+    def _meta_path(self, tmp_id: str) -> str:
+        return os.path.join(self.cache_dir, tmp_id + ".json")
+
+    def _clean_cache(self):
+        """Удаляет временные файлы без незагруженных изменений (остались после сбоя)."""
+        for fn in os.listdir(self.cache_dir):
+            if fn.endswith(".tmp") and not os.path.exists(self._meta_path(fn[:-4])):
+                try:
+                    os.remove(os.path.join(self.cache_dir, fn))
+                except OSError:
+                    pass
+
+    def pending(self) -> list[tuple[str, str]]:
+        """[(tmp_id, путь в облаке)] — изменения, не дошедшие до облака."""
+        out = []
+        for fn in sorted(os.listdir(self.cache_dir)):
+            if not fn.endswith(".json"):
+                continue
+            tmp_id = fn[:-5]
+            if not os.path.exists(self._tmp_path(tmp_id)):
+                continue
+            try:
+                with open(self._meta_path(tmp_id), encoding="utf-8") as f:
+                    out.append((tmp_id, json.load(f)["path"]))
+            except (OSError, ValueError, KeyError):
+                continue
+        return out
+
+    def recover_pending(self) -> int:
+        """Догружает изменения, оставшиеся после сбоя. Возвращает число успешных."""
+        ok = 0
+        for tmp_id, path in self.pending():
+            with self.lock:
+                if path.lower() in self.files:
+                    continue          # файл сейчас открыт — его допишет обычный путь
+                if any(st.tmp_id == tmp_id for st in self.files.values()):
+                    continue
+            try:
+                _, entry = self._resolve(path)
+                if entry is not None and entry.is_dir:
+                    log.error("Не догружено %s: на этом месте теперь папка", path)
+                    continue
+                st = FileState.from_pending(self, tmp_id, path, entry)
+            except Exception as e:  # noqa: BLE001
+                log.error("Не удалось подготовить догрузку %s: %s", path, e)
+                continue
+            with self.lock:
+                st.refs = 1
+                self.files[path.lower()] = st
+            try:
+                log.info("Догружаю изменения после сбоя: %s", path)
+                st.upload()
+                ok += 1
+            except Exception as e:  # noqa: BLE001
+                log.error("Догрузка %s не удалась: %s (повторю при следующем подключении)", path, e)
+            finally:
+                with self.lock:
+                    st.refs -= 1
+                    if st.refs <= 0 and self.files.get(path.lower()) is st:
+                        del self.files[path.lower()]
+                        st.close()
+        return ok
+
+    def _forget_pending(self, path: str, new_path: str | None = None):
+        """При удалении/переименовании — чтобы догрузка не воскресила старый файл."""
+        for tmp_id, p in self.pending():
+            if p.lower() != path.lower():
+                continue
+            with self.lock:
+                if any(st.tmp_id == tmp_id for st in self.files.values()):
+                    continue
+            if new_path is None:
+                for fp in (self._meta_path(tmp_id), self._tmp_path(tmp_id)):
+                    try:
+                        os.remove(fp)
+                    except OSError:
+                        pass
+            else:
+                with open(self._meta_path(tmp_id), "w", encoding="utf-8") as f:
+                    json.dump({"path": new_path, "time": time.time()}, f, ensure_ascii=False)
+
+    def _progress(self, name, done, total):
+        self.upload_state = (name, done, total)
+
+    def status(self) -> dict:
+        with self.lock:
+            states = list(self.files.values())
+        name, done, total = self.upload_state
+        return {
+            "uploading": name,
+            "percent": int(done * 100 / total) if total else 0,
+            "open": sorted({s.name for s in states if s.refs > 0}),
+            "unsaved": sorted({s.name for s in states if s.dirty and not s.deleted}),
+            "pending": len(self.pending()),
+        }
+
+    def upload_all(self) -> int:
+        """Отправить все изменения (перед отключением). Возвращает число ошибок."""
+        with self.lock:
+            states = list(self.files.values())
+        failed = 0
+        for st in states:
+            try:
+                st.upload()
+            except Exception as e:  # noqa: BLE001
+                failed += 1
+                log.error("Не удалось загрузить %s: %s (сохранено для догрузки)", st.path, e)
+        return failed
 
     # ---------- кэш ----------
     def _listing(self, path: str) -> dict[str, Entry]:
@@ -403,7 +610,10 @@ class CloudFS(Operations):
     def flush(self, path, fh):
         st = self.handles.get(fh)
         if st is not None:
-            st.upload()
+            if st.deferred:
+                st.sync_local()   # контейнер: в облако — только при закрытии
+            else:
+                st.upload()
         return 0
 
     @op
@@ -415,14 +625,13 @@ class CloudFS(Operations):
         if st is None:
             return 0
         try:
-            st.upload()
+            with self.lock:
+                last = st.refs <= 1
+            if last or not st.deferred:
+                st.upload()
         except Exception as e:  # noqa: BLE001
-            copy = None
-            try:
-                copy = st.save_failed_copy()
-            except Exception:  # noqa: BLE001
-                log.exception("Не удалось сохранить резервную копию")
-            log.error("Не удалось загрузить %s: %s. Копия сохранена: %s", st.path, e, copy)
+            log.error("Не удалось загрузить %s: %s. Изменения сохранены локально "
+                      "и будут догружены при следующем подключении", st.path, e)
         finally:
             with self.lock:
                 st.refs -= 1
@@ -450,6 +659,7 @@ class CloudFS(Operations):
                 with st.lock:
                     st.deleted, st.dirty = True, False
         self._cache_remove(real)
+        self._forget_pending(real)
         return 0
 
     @op
@@ -515,11 +725,16 @@ class CloudFS(Operations):
             with self.lock:
                 self.files.pop(sreal.lower(), None)
                 st.path = dreal
+                if st.dirty and st.tmp_id:
+                    st._write_meta()
                 if de is not None:
                     st.is_new = False      # цель уже есть на сервере — перезапишем
                 self.files[dreal.lower()] = st
         self._cache_remove(sreal)
         self._drop_tree(dreal)
+        if not se.is_dir:
+            self._forget_pending(dreal)
+            self._forget_pending(sreal, dreal)
         if not (st is not None and st.is_new and de is None):
             moved = Entry(dname, se.is_dir, se.size, se.mtime or time.time(), id=se.id)
             self._cache_put(dreal, moved)
@@ -553,11 +768,8 @@ class CloudFS(Operations):
         return 0
 
     def destroy(self, path):
+        self.upload_all()
         with self.lock:
             states = list(self.files.values())
         for st in states:
-            try:
-                st.upload()
-            except Exception:  # noqa: BLE001
-                log.exception("Загрузка при отключении: %s", st.path)
             st.close()

@@ -226,8 +226,9 @@ def test_case_only_rename(env):
     assert "/Docs/report.txt" in p.files
 
 
-def test_failed_upload_keeps_copy(env, tmp_path):
+def test_failed_upload_is_retried_on_next_mount(env, tmp_path):
     p, f = env
+    real_upload = p.upload
 
     def boom(*a):
         raise RuntimeError("network down")
@@ -237,9 +238,80 @@ def test_failed_upload_keeps_copy(env, tmp_path):
     with pytest.raises(FuseOSError):
         f.flush("/x.txt", fh)
     f.release("/x.txt", fh)
-    failed = tmp_path / "failed_uploads"
-    saved = list(failed.iterdir())
-    assert len(saved) == 1 and saved[0].read_bytes() == b"important"
+    assert "/x.txt" not in p.files
+    assert [x[1] for x in f.pending()] == ["/x.txt"]
+    # «перезапуск» программы: новый экземпляр ФС на том же кэше
+    p.upload = real_upload
+    f2 = CloudFS(p, f.cache_dir)
+    assert f2.recover_pending() == 1
+    assert p.files["/x.txt"] == b"important"
+    assert f2.pending() == [] and os.listdir(f.cache_dir) == []
+
+
+def test_crash_while_open_keeps_changes(env):
+    """Процесс убит, пока контейнер был открыт: изменения не теряются."""
+    p, f = env
+    fh = f.open("/Docs/Report.txt", os.O_RDWR)
+    f.write("/Docs/Report.txt", b"HELLO", 0, fh)
+    # release не вызывается — имитация падения; файл на диске остаётся
+    f.handles[fh].tmp.flush()
+    f2 = CloudFS(p, f.cache_dir)
+    assert f2.recover_pending() == 1
+    assert p.files["/Docs/Report.txt"] == b"HELLO world"
+
+
+def test_deferred_large_file(env, monkeypatch):
+    p, f = env
+    monkeypatch.setattr(fsmod, "DEFER_MIN", 100)
+    fh = f.create("/vault.hc", 0o666)
+    f.write("/vault.hc", b"x" * 500, 0, fh)
+    f.flush("/vault.hc", fh)            # VeraCrypt сбрасывает буферы
+    f.fsync("/vault.hc", 0, fh)
+    f.write("/vault.hc", b"y" * 10, 100, fh)
+    f.flush("/vault.hc", fh)
+    assert "/vault.hc" not in p.files   # в облако ещё ничего не ушло
+    st = f.status()
+    assert st["open"] == ["vault.hc"] and st["unsaved"] == ["vault.hc"]
+    f.release("/vault.hc", fh)          # отключили контейнер
+    assert p.files["/vault.hc"] == b"x" * 100 + b"y" * 10 + b"x" * 390
+    assert sum(1 for c in p.calls if c[0] == "upload") == 1
+
+
+def test_deferred_off_uploads_on_flush(env, monkeypatch):
+    p, f = env
+    monkeypatch.setattr(fsmod, "DEFER_MIN", 100)
+    f.defer_large = False
+    fh = f.create("/big.bin", 0o666)
+    f.write("/big.bin", b"x" * 500, 0, fh)
+    f.flush("/big.bin", fh)
+    assert len(p.files["/big.bin"]) == 500
+    f.release("/big.bin", fh)
+
+
+def test_upload_all_before_unmount(env, monkeypatch):
+    p, f = env
+    monkeypatch.setattr(fsmod, "DEFER_MIN", 100)
+    fh = f.create("/vault.hc", 0o666)
+    f.write("/vault.hc", b"z" * 300, 0, fh)
+    assert f.upload_all() == 0
+    assert p.files["/vault.hc"] == b"z" * 300
+
+
+def test_delete_drops_pending(env):
+    p, f = env
+
+    def boom(*a):
+        raise RuntimeError("down")
+    real = p.upload
+    p.upload = boom
+    fh = f.open("/Docs/Report.txt", os.O_RDWR)
+    f.write("/Docs/Report.txt", b"J", 0, fh)
+    f.release("/Docs/Report.txt", fh)
+    assert f.pending()
+    p.upload = real
+    f.unlink("/Docs/Report.txt")
+    assert f.pending() == [] and f.recover_pending() == 0
+    assert "/Docs/Report.txt" not in p.files
 
 
 def test_statfs(env):
