@@ -3,7 +3,7 @@ name: Сборка CloudMount
 on:
   push:
     branches: [main]
-    paths-ignore: ["docs/**", ".github/workflows/pages.yml"]
+    paths-ignore: ["docs/**", "deploy/**"]
   workflow_dispatch:
 
 permissions:
