@@ -58,7 +58,7 @@ def apply(letter: str, share: str | None, label: str, icon_path: str | None):
 
 
 def forget_old_names():
-    """Убирает из кэша Проводника старые имена дисков (\\cloudmount\yandex-a7872ea34122)."""
+    """Убирает из кэша Проводника старые имена дисков вида cloudmount/yandex-a7872ea34122."""
     if not IS_WIN:
         return
     import winreg
