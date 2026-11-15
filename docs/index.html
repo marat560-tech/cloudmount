@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CloudMount — облака как диски Windows</title>
+<meta name="description" content="Бесплатная программа с открытым кодом: Яндекс Диск, Облако Билайн, Mail.ru, Google Drive, OneDrive, Dropbox, pCloud, Box, S3, SFTP и WebDAV как обычные диски Windows.">
+<meta property="og:title" content="CloudMount — облака как диски Windows">
+<meta property="og:description" content="Яндекс Диск, Облако Билайн, Google Drive, OneDrive, Dropbox и другие облака под своей буквой диска. Бесплатно, открытый код.">
+<meta property="og:image" content="https://marat560-tech.github.io/cloudmount/icon.png">
+<link rel="icon" href="favicon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Manrope:wght@600;700;800&display=swap">
+<style>
+:root{--bg:#F5F7FA;--card:#fff;--ink:#0E1726;--muted:#3B4658;--soft:#5A6578;--line:#E3E8EF;--accent:#1A66E0;--accent-d:#0F4FB5;--chip:#E6EFFD;--chip-ink:#1450B8}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 Inter,system-ui,sans-serif}
+a{color:var(--accent)}a:hover{color:var(--accent-d)}
+h1,h2,h3{font-family:Manrope,sans-serif;letter-spacing:-.01em}
+.wrap{max-width:1160px;margin:0 auto;padding:0 24px}
+header{background:#fff;border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
+.nav{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;padding:12px 24px;max-width:1160px;margin:0 auto}
+.brand{display:flex;align-items:center;gap:10px;text-decoration:none;color:var(--ink);font:800 20px Manrope,sans-serif}
+.brand img{width:34px;height:34px}
+.nav nav{display:flex;flex-wrap:wrap;align-items:center;gap:20px;font-size:15px}
+.nav nav a{color:var(--muted);text-decoration:none}
+.btn{display:inline-flex;align-items:center;gap:10px;font-weight:600;text-decoration:none;border-radius:12px;padding:14px 22px;min-height:44px}
+.btn-primary{background:var(--accent);color:#fff!important}.btn-primary:hover{background:var(--accent-d)}
+.btn-ghost{background:#fff;color:var(--ink)!important;border:1px solid #CBD3DF}
+.btn-sm{padding:10px 16px;border-radius:10px}
+.chip{display:inline-block;background:var(--chip);color:var(--chip-ink);font-size:14px;font-weight:600;padding:6px 12px;border-radius:999px}
+.hero{display:flex;flex-wrap:wrap;align-items:center;gap:56px;padding:64px 24px}
+.hero>div{flex:1 1 420px;min-width:0}
+.hero h1{font-size:clamp(34px,5vw,54px);line-height:1.08;margin:18px 0}
+.lead{font-size:19px;color:var(--muted);margin:0 0 24px}
+.small{font-size:14px;color:var(--soft)}
+.row{display:flex;flex-wrap:wrap;gap:12px}
+.mock{background:#fff;border:1px solid var(--line);border-radius:16px;box-shadow:0 18px 40px rgba(14,23,38,.1);overflow:hidden}
+.mock-bar{display:flex;align-items:center;gap:8px;padding:12px 16px;border-bottom:1px solid #EEF1F5;background:#FAFBFC;font-size:14px;color:var(--soft)}
+.dot{width:10px;height:10px;border-radius:50%;background:#D5DAE2}
+.drives{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;padding:20px}
+.drive{display:flex;gap:12px;align-items:center;padding:12px;border-radius:12px;border:1px solid #EEF1F5}
+.ico{width:44px;height:44px;flex:none;border-radius:10px;display:flex;align-items:center;justify-content:center}
+.meter{height:8px;border-radius:4px;background:var(--line);overflow:hidden;margin:6px 0}.meter i{display:block;height:8px;background:var(--accent)}
+section{padding:72px 0}
+.band{background:#fff;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+h2{font-size:36px;margin:0 0 10px}
+.sub{font-size:18px;color:var(--muted);margin:0 0 28px;max-width:720px}
+.grid{display:grid;gap:16px}
+.g-clouds{grid-template-columns:repeat(auto-fit,minmax(200px,1fr))}
+.g-feat{grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:28px 36px}
+.g-steps{grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}
+.card{background:#FAFBFC;border:1px solid var(--line);border-radius:14px;padding:20px}
+.card h3{margin:10px 0 4px;font-size:18px}
+.card p{margin:0;font-size:14px;color:var(--muted)}
+.feat{display:flex;gap:16px}.feat .n{width:44px;height:44px;flex:none;border-radius:12px;background:var(--chip);color:var(--chip-ink);display:flex;align-items:center;justify-content:center;font:800 18px Manrope,sans-serif}
+.feat h3{margin:0 0 6px;font-family:Inter,sans-serif;font-size:18px;font-weight:600}.feat p{margin:0;font-size:15px;color:var(--muted)}
+.dark{background:#0E1726;color:#fff}.dark p{color:#C9D3E3}.dark .tag{color:#9EC2FF;font-weight:600;font-size:14px}
+.steps{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:14px}
+.steps li{display:flex;gap:16px;background:#17243A;border-radius:14px;padding:18px 20px}
+.steps b{font:800 22px Manrope,sans-serif;color:#9EC2FF}
+.step{background:#fff;border:1px solid var(--line);border-radius:14px;padding:24px}
+.step .num{font:800 28px Manrope,sans-serif;color:var(--accent)}
+.step h3{margin:6px 0;font-family:Inter,sans-serif;font-size:18px;font-weight:600}.step p{margin:0;font-size:15px;color:var(--muted)}
+details{border:1px solid var(--line);border-radius:12px;padding:18px 20px;background:#FAFBFC}
+details+details{margin-top:10px}
+summary{cursor:pointer;font-weight:600;font-size:17px;list-style:none;display:flex;justify-content:space-between;gap:16px}
+summary::-webkit-details-marker{display:none}summary::after{content:"+";font-size:24px;line-height:1;color:var(--soft)}details[open] summary::after{content:"–"}
+details p{margin:12px 0 0;color:var(--muted);font-size:15px}
+.oss{display:flex;flex-wrap:wrap;gap:24px;align-items:center;justify-content:space-between;background:#fff;border:1px solid var(--line);border-radius:20px;padding:32px}
+.donate{display:flex;flex-wrap:wrap;gap:32px;align-items:center;justify-content:space-between;background:var(--chip);border-radius:20px;padding:36px}
+dl{margin:0;background:#fff;border-radius:14px;padding:18px 22px;display:grid;grid-template-columns:auto 1fr;gap:8px 18px}
+dt{color:var(--soft)}dd{margin:0;font-weight:600}
+footer{background:#fff;border-top:1px solid var(--line);padding:28px 0;font-size:14px;color:var(--soft)}
+footer .wrap{display:flex;flex-wrap:wrap;gap:16px;justify-content:space-between}
+@media (max-width:640px){.nav nav a:not(.btn){display:none}section{padding:52px 0}h2{font-size:28px}.hero{padding:40px 24px}}
+</style>
+</head>
+<body>
+<header><div class="nav">
+<a class="brand" href="#top"><img src="icon.png" alt="">CloudMount</a>
+<nav aria-label="Разделы">
+<a href="#clouds">Облака</a><a href="#features">Возможности</a><a href="#veracrypt">VeraCrypt</a>
+<a href="#install">Установка</a><a href="#faq">Вопросы</a>
+<a href="https://github.com/marat560-tech/cloudmount">GitHub</a>
+<a class="btn btn-primary btn-sm" href="https://github.com/marat560-tech/cloudmount/releases/latest/download/CloudMount-Setup.exe">Скачать</a>
+</nav></div></header>
+
+<main id="top">
+<div class="wrap hero" style="padding-left:24px;padding-right:24px">
+<div>
+<span class="chip">Бесплатно · открытый исходный код · GNU GPL v3</span>
+<h1>Облачные хранилища — как обычные диски в Проводнике</h1>
+<p class="lead">Яндекс Диск, Облако Билайн, Mail.ru, Google Drive, OneDrive, Dropbox и ещё 7 сервисов под своей буквой диска. Открывайте, копируйте и сохраняйте файлы из любой программы — без синхронизации и без лишнего места на компьютере.</p>
+<div class="row">
+<a class="btn btn-primary" href="https://github.com/marat560-tech/cloudmount/releases/latest/download/CloudMount-Setup.exe">
+<svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M5 21h14"/></svg>
+Скачать установщик</a>
+<a class="btn btn-ghost" href="https://github.com/marat560-tech/cloudmount">Исходный код на GitHub</a>
+</div>
+<p class="small" style="margin-top:14px">Windows 10 и 11 · драйвер WinFsp уже внутри установщика · <a href="https://github.com/marat560-tech/cloudmount/releases/latest">все файлы версии</a></p>
+</div>
+<div role="img" aria-label="Пример: облака в «Этом компьютере» как диски" class="mock">
+<div class="mock-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span style="margin-left:10px">Этот компьютер › Сетевые расположения</span></div>
+<div class="drives">
+<div class="drive"><div class="ico" style="background:#3B6FD8">☁︎</div><div style="flex:1;min-width:0"><b style="font-size:15px">Яндекс Диск (Y:)</b><div class="meter"><i style="width:38%"></i></div><span class="small">12,4 ГБ свободно из 20 ГБ</span></div></div>
+<div class="drive"><div class="ico" style="background:#2E8B6E">☁︎</div><div style="flex:1;min-width:0"><b style="font-size:15px">Google Drive (W:)</b><div class="meter"><i style="width:52%"></i></div><span class="small">7,2 ГБ свободно из 15 ГБ</span></div></div>
+<div class="drive"><div class="ico" style="background:#2C6EBF">☁︎</div><div style="flex:1;min-width:0"><b style="font-size:15px">OneDrive (O:)</b><div class="meter"><i style="width:21%"></i></div><span class="small">4,0 ГБ свободно из 5 ГБ</span></div></div>
+<div class="drive"><div class="ico" style="background:#B7791F">☁︎</div><div style="flex:1;min-width:0"><b style="font-size:15px">Облако Билайн (Z:)</b><div class="meter"><i style="width:64%"></i></div><span class="small">3,6 ГБ свободно из 10 ГБ</span></div></div>
+</div></div>
+</div>
+
+<section id="clouds" class="band"><div class="wrap">
+<h2>Какие облака подключаются</h2>
+<p class="sub">Сколько угодно аккаунтов одновременно — каждый как отдельный диск. Если одно облако тормозит, остальные работают как обычно.</p>
+<div class="grid g-clouds">
+<div class="card"><span class="chip">REST API</span><h3>Яндекс Диск</h3><p>Быстрый официальный API вместо медленного WebDAV.</p></div>
+<div class="card"><span class="chip">WebDAV</span><h3>Облако Билайн</h3><p>Включите доступ по WebDAV в настройках облака.</p></div>
+<div class="card"><span class="chip">WebDAV</span><h3>Облако Mail.ru</h3><p>Только на платных тарифах Mail.ru, нужен пароль для внешнего приложения.</p></div>
+<div class="card"><span class="chip">Drive API</span><h3>Google Drive</h3><p>Обычные файлы и папки; документы Google Docs не показываются.</p></div>
+<div class="card"><span class="chip">Microsoft Graph</span><h3>OneDrive</h3><p>Личный OneDrive, вход через браузер, корзина сохраняется.</p></div>
+<div class="card"><span class="chip">API v2</span><h3>Dropbox</h3><p>Вход через браузер, большие файлы загружаются частями.</p></div>
+<div class="card"><span class="chip">официальный API</span><h3>pCloud</h3><p>Серверы в США и Европе определяются автоматически.</p></div>
+<div class="card"><span class="chip">официальный API</span><h3>Box</h3><p>Личные и рабочие аккаунты Box.</p></div>
+<div class="card"><span class="chip">WebDAV</span><h3>Koofr</h3><p>Европейское облако, 10 ГБ бесплатно.</p></div>
+<div class="card"><span class="chip">WebDAV</span><h3>Nextcloud</h3><p>Свой сервер Nextcloud или ownCloud.</p></div>
+<div class="card"><span class="chip">S3</span><h3>S3-хранилища</h3><p>Yandex Object Storage, VK Cloud, Selectel, Backblaze B2, Cloudflare R2.</p></div>
+<div class="card"><span class="chip">SSH</span><h3>SFTP</h3><p>Свой сервер, VPS или домашний NAS.</p></div>
+<div class="card"><span class="chip">любой сервер</span><h3>WebDAV</h3><p>Любой другой сервер с WebDAV.</p></div>
+</div></div></section>
+
+<section id="features"><div class="wrap">
+<h2>Работает как обычный диск</h2>
+<p class="sub">Не нужно ничего синхронизировать: файлы подгружаются по мере открытия.</p>
+<div class="grid g-feat">
+<div class="feat"><div class="n">1</div><div><h3>Своя буква для каждого облака</h3><p>Диски видны в «Этом компьютере» под вашими названиями и со своими значками.</p></div></div>
+<div class="feat"><div class="n">2</div><div><h3>Видео без полной закачки</h3><p>Большие файлы читаются частями — фильм начинает играть сразу.</p></div></div>
+<div class="feat"><div class="n">3</div><div><h3>Ничего не теряется</h3><p>Если связь пропала, изменения сохраняются на компьютере и догружаются потом.</p></div></div>
+<div class="feat"><div class="n">4</div><div><h3>Пароли под защитой Windows</h3><p>Ключи и токены зашифрованы: прочитать их может только ваша учётная запись.</p></div></div>
+<div class="feat"><div class="n">5</div><div><h3>Трей, автозапуск, тёмная тема</h3><p>Запускается вместе с Windows, сворачивается в трей, выглядит как Windows 11.</p></div></div>
+<div class="feat"><div class="n">6</div><div><h3>Открытый исходный код</h3><p>Весь код на GitHub под лицензией GNU GPL v3 — можно проверить, что программа делает с вашими файлами.</p></div></div>
+</div></div></section>
+
+<section id="veracrypt" class="dark"><div class="wrap" style="display:flex;flex-wrap:wrap;gap:48px">
+<div style="flex:1 1 380px;min-width:0">
+<span class="tag">Для зашифрованных данных</span>
+<h2 style="margin-top:10px">Контейнеры VeraCrypt прямо в облаке</h2>
+<p>Большие файлы — контейнеры, образы дисков, виртуальные машины — отправляются в облако один раз, когда вы их закрываете, а не при каждом сохранении. Пока контейнер открыт, работа идёт с локальной скоростью.</p>
+<p>Если компьютер выключился до конца загрузки, изменения не пропадут: они догрузятся автоматически.</p>
+</div>
+<ol class="steps" style="flex:1 1 420px;min-width:0">
+<li><b>1</b><span>Подключите контейнер в VeraCrypt с облачного диска — при первом изменении он один раз скачается.</span></li>
+<li><b>2</b><span>Работайте с файлами внутри как обычно — быстро, без ожидания сети.</span></li>
+<li><b>3</b><span>Отключите контейнер — CloudMount загрузит его в облако и покажет прогресс.</span></li>
+</ol></div></section>
+
+<section id="install"><div class="wrap">
+<h2>Установка за три шага</h2>
+<div class="grid g-steps" style="margin-top:28px">
+<div class="step"><div class="num">01</div><h3>Скачайте установщик</h3><p><a href="https://github.com/marat560-tech/cloudmount/releases/latest/download/CloudMount-Setup.exe">CloudMount-Setup.exe</a> — драйвер WinFsp уже внутри и ставится автоматически.</p></div>
+<div class="step"><div class="num">02</div><h3>Установите</h3><p>Если Windows предупредит о неизвестном издателе — «Подробнее» → «Выполнить в любом случае».</p></div>
+<div class="step"><div class="num">03</div><h3>Добавьте облако</h3><p>«Добавить облако» → выберите сервис → следуйте подсказкам. Инструкции — <a href="https://github.com/marat560-tech/cloudmount#readme">в README</a>.</p></div>
+</div></div></section>
+
+<section class="band"><div class="wrap">
+<div class="oss">
+<div style="flex:1 1 420px;min-width:0">
+<h2 style="font-size:30px">Открытый исходный код</h2>
+<p style="margin:0;color:var(--muted)">CloudMount распространяется на условиях GNU GPL v3: программу можно свободно использовать, изучать и изменять, а все её доработки тоже обязаны оставаться открытыми. Exe-файл собирается автоматически на GitHub прямо из опубликованного кода.</p>
+</div>
+<div class="row"><a class="btn btn-ghost" href="https://github.com/marat560-tech/cloudmount">Код на GitHub</a><a class="btn btn-ghost" href="https://github.com/marat560-tech/cloudmount/blob/main/LICENSE">Лицензия</a></div>
+</div></div></section>
+
+<section id="faq"><div class="wrap" style="max-width:860px">
+<h2 style="margin-bottom:24px">Частые вопросы</h2>
+<details><summary>Это бесплатно?</summary><p>Да, полностью: ни подписок, ни ограничений на число дисков.</p></details>
+<details><summary>Файлы скачиваются на компьютер целиком?</summary><p>Нет. Список файлов и их содержимое подгружаются по мере открытия. Место занимают только файлы, с которыми вы сейчас работаете.</p></details>
+<details><summary>Зачем создавать «своё приложение» у Яндекса, Google, Dropbox и других?</summary><p>Эти сервисы выдают доступ к API только зарегистрированным приложениям. Своё приложение делается за пару минут, и ваш доступ не зависит ни от кого другого. В окне настройки каждого облака есть подсказки и ссылки.</p></details>
+<details><summary>Почему Windows предупреждает о неизвестном издателе?</summary><p>У программы нет платной цифровой подписи. Код открыт, а exe собирается автоматически на GitHub из этого кода.</p></details>
+<details><summary>Можно подключить Облако Mail.ru?</summary><p>Да, но Mail.ru даёт доступ по WebDAV только на платных тарифах и требует отдельный пароль для внешнего приложения.</p></details>
+<details><summary>А TeraBox?</summary><p>У TeraBox нет официального API, поэтому встроенной поддержки нет. Его можно подключить через бесплатную программу AList, которая отдаёт TeraBox по WebDAV, — <a href="https://github.com/marat560-tech/cloudmount#terabox-неофициально-через-alist">инструкция в README</a>. Способ неофициальный и может перестать работать.</p></details>
+<details><summary>Безопасно ли хранить там контейнеры VeraCrypt?</summary><p>Да: контейнер шифруется на вашем компьютере, облако видит только зашифрованный файл. Не открывайте один контейнер одновременно с двух компьютеров.</p></details>
+</div></section>
+
+<section id="donate" style="padding-top:0"><div class="wrap">
+<div class="donate">
+<div style="flex:1 1 380px;min-width:0"><h2 style="font-size:30px">Поддержать проект</h2><p style="margin:0;color:#2A3445">CloudMount бесплатный. Если программа экономит вам время — можно отблагодарить автора переводом по номеру телефона через СБП.</p></div>
+<dl><dt>Получатель</dt><dd>Стелла</dd><dt>Банк</dt><dd>Т-Банк</dd><dt>Телефон</dt><dd>+7 967 467-10-33</dd></dl>
+</div></div></section>
+</main>
+
+<footer><div class="wrap">
+<div>CloudMount · © 2026 Stella · <a href="https://github.com/marat560-tech/cloudmount/blob/main/LICENSE">GNU GPL v3</a><br>
+Использует WinFsp - Windows File System Proxy, Copyright (C) Bill Zissimopoulos — <a href="https://github.com/winfsp/winfsp">github.com/winfsp/winfsp</a></div>
+<nav aria-label="Ссылки" class="row" style="gap:20px"><a href="https://github.com/marat560-tech/cloudmount">GitHub</a><a href="https://github.com/marat560-tech/cloudmount/releases">Все версии</a><a href="https://github.com/marat560-tech/cloudmount/issues">Сообщить об ошибке</a></nav>
+</div></footer>
+</body>
+</html>

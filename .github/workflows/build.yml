@@ -3,6 +3,7 @@ name: Сборка CloudMount
 on:
   push:
     branches: [main]
+    paths-ignore: ["docs/**", ".github/workflows/pages.yml"]
   workflow_dispatch:
 
 permissions:
@@ -27,10 +28,12 @@ jobs:
       - name: Тесты (включая окно программы)
         run: |
           set -o pipefail
-          python -m pytest -q -rfE tests 2>&1 | tee pytest.log || {
+          python -m pytest -q -rfEs tests 2>&1 | tee pytest.log || {
             grep -E "^(FAILED|ERROR)|Error|assert" pytest.log | head -30 | sed 's/^/::error::/'
             exit 1
           }
+          echo "::notice::$(tail -1 pytest.log)"
+          grep -E "^SKIPPED" pytest.log | sed 's/^/::notice::/' || true
 
       - name: Сборка CloudMount.exe
         run: >
