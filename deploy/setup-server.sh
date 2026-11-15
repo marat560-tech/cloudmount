@@ -6,7 +6,8 @@
 # получает бесплатный HTTPS-сертификат Let's Encrypt и каждые 10 минут обновляет сайт.
 set -euo pipefail
 
-DOMAIN="xn--80aaboujabcc5ae8b.xn--p1ai"        # облакокакдиск.рф
+MAIN="cloudmount.ru"                            # основной адрес сайта
+ALIASES="xn--80aaboujabcc5ae8b.xn--p1ai"        # облакокакдиск.рф → перенаправляется на основной
 REPO="https://github.com/marat560-tech/cloudmount.git"
 SRC="/opt/cloudmount-site"
 WEBROOT="/var/www/cloudmount"
@@ -30,18 +31,26 @@ fi
 mkdir -p "$(dirname "$WEBROOT")"
 ln -sfn "$SRC/docs" "$WEBROOT"
 
-say "Настраиваю nginx для облакокакдиск.рф"
+say "Настраиваю nginx: $MAIN (и облакокакдиск.рф)"
+ALIAS_NAMES=""
+for d in $ALIASES; do ALIAS_NAMES="$ALIAS_NAMES $d www.$d"; done
 cat > /etc/nginx/sites-available/cloudmount <<NGINX
 server {
-    listen 80;
-    listen [::]:80;
-    server_name $DOMAIN www.$DOMAIN;
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name $MAIN www.$MAIN;
     root $WEBROOT;
     index index.html;
     charset utf-8;
     location / { try_files \$uri \$uri/ =404; }
     location ~* \.(png|ico|svg|jpg|webp|css|js)$ { expires 7d; }
     location ~ /\. { deny all; }
+}
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $ALIAS_NAMES;
+    return 301 \$scheme://$MAIN\$request_uri;
 }
 NGINX
 ln -sf /etc/nginx/sites-available/cloudmount /etc/nginx/sites-enabled/cloudmount
@@ -61,18 +70,25 @@ CRON
 
 say "HTTPS-сертификат"
 MYIP=$(curl -fsS4 --max-time 10 https://api.ipify.org || true)
-DNSIP=$(getent ahostsv4 "$DOMAIN" | awk 'NR==1{print $1}' || true)
-if [ -n "$DNSIP" ] && [ "$DNSIP" = "$MYIP" ]; then
-  WWW=""
-  if [ "$(getent ahostsv4 "www.$DOMAIN" | awk 'NR==1{print $1}' || true)" = "$MYIP" ]; then
-    WWW="-d www.$DOMAIN"
+CERT_ARGS=""
+MISSING=""
+for d in $MAIN www.$MAIN $ALIAS_NAMES; do
+  ip=$(getent ahostsv4 "$d" | awk 'NR==1{print $1}' || true)
+  if [ -n "$ip" ] && [ "$ip" = "$MYIP" ]; then
+    CERT_ARGS="$CERT_ARGS -d $d"
+  else
+    MISSING="$MISSING $d(${ip:-нет})"
   fi
-  certbot --nginx -d "$DOMAIN" $WWW --non-interactive --agree-tos \
+done
+if echo "$CERT_ARGS" | grep -q -- "-d $MAIN"; then
+  certbot --nginx --cert-name cloudmount $CERT_ARGS --expand --non-interactive --agree-tos \
     --register-unsafely-without-email --redirect
-  say "Готово: https://облакокакдиск.рф"
+  say "Готово: https://$MAIN"
 else
-  echo "Домен $DOMAIN указывает на '${DNSIP:-никуда}', а этот сервер — $MYIP."
-  echo "Добавьте у регистратора домена A-запись @ (и www) → $MYIP,"
-  echo "подождите, пока DNS обновится (от минут до нескольких часов), и запустите скрипт ещё раз."
-  say "Сайт уже работает по адресу http://$MYIP/ (без домена)"
+  say "Сайт уже работает по адресу http://$MYIP/"
+fi
+if [ -n "$MISSING" ]; then
+  echo "Эти адреса пока не указывают на этот сервер ($MYIP):$MISSING"
+  echo "Добавьте у регистратора A-записи @ и www → $MYIP, подождите обновления DNS"
+  echo "и запустите скрипт ещё раз — HTTPS включится и для них."
 fi

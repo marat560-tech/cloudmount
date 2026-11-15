@@ -7,7 +7,7 @@ DESCRIPTION = ("Облачные хранилища — как обычные д
                "Яндекс Диск, Облако Билайн, Mail.ru, Google Drive, OneDrive, Dropbox,\n"
                "pCloud, Box, Koofr, Nextcloud, S3, SFTP и WebDAV.")
 GITHUB_URL = "https://github.com/marat560-tech/cloudmount"
-SITE_URL = "https://облакокакдиск.рф/"
+SITE_URL = "https://cloudmount.ru/"
 AUTHOR = "Stella"
 LICENSE = "GNU GPL v3"
 LICENSE_TEXT = (f"Copyright (C) 2026 {AUTHOR}\n"
