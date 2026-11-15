@@ -17,8 +17,12 @@ SCRIPT = textwrap.dedent(r"""
         a = config.new_account(kind)
         a.update(name="Диск " + kind, letter="DEFGHIJKLMNOPQRSTUVWXYZ"[i])
         config.save_account(a)
+    config.set_setting("first_run", 1)          # «давно пользуется» — покажем строку о поддержке
     app = gui.App()
     app.root.update()
+    assert app.banner is not None
+    app.banner.later(); app.root.update()
+    assert not gui.donate_due()
     assert len(app.cards) == len(PROVIDERS)
     for card in app.cards.values():
         card.refresh()

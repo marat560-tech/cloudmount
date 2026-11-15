@@ -279,6 +279,7 @@ class FileState:
             self.mtime = ent.mtime or time.time()
             self.ctx.clear()
             self.fs._cache_put(self.path, self.entry)
+            self.fs.uploaded_bytes += self.size
             log.info("Загружено: %s", self.path)
 
     def close(self):
@@ -303,6 +304,7 @@ class CloudFS(Operations):
         self.defer_large = defer_large
         self.size_override = int(size_gb * 2**30) if size_gb else 0
         self.upload_state = (None, 0, 0)          # (имя, отправлено, всего)
+        self.uploaded_bytes = 0                   # всего отправлено за сеанс
         self._clean_cache()
         self.ttl = dir_ttl
         self.lock = threading.RLock()

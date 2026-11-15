@@ -20,6 +20,7 @@ from .icons import draw as draw_icon
 from .mounts import MountManager
 from .oauth import redirect_uri
 from .providers import PROVIDERS, make_provider
+from .donate import donate_due  # noqa: F401  (используется окном и тестами)
 from .ui_clip import enable_clipboard
 
 try:
@@ -638,6 +639,38 @@ class DriveCard(tk.Frame):
                                        style="Accent.TButton")
 
 
+# ---------------- напоминание о поддержке ----------------
+class DonateBanner(tk.Frame):
+    def __init__(self, master, app):
+        super().__init__(master, bg=P["sel"], padx=16, pady=10)
+        self.app = app
+        tk.Label(self, text="♥", bg=P["sel"], fg=P["accent"], font=(FONT, 14)).pack(side="left", padx=(0, 10))
+        txt = tk.Frame(self, bg=P["sel"])
+        txt.pack(side="left", fill="x", expand=True)
+        tk.Label(txt, text="CloudMount бесплатный. Если он вам полезен — поддержите автора.",
+                 bg=P["sel"], fg=P["ink"], font=(FONT, 10, "bold"), anchor="w").pack(anchor="w")
+        tk.Label(txt, text="RaiDrive и похожие программы просят подписку за полные возможности, "
+                           "а CloudMount бесплатен навсегда.",
+                 bg=P["sel"], fg=P["muted"], font=(FONT, 9), anchor="w").pack(anchor="w")
+        close = tk.Label(self, text="✕", bg=P["sel"], fg=P["muted"], cursor="hand2", font=(FONT, 11))
+        close.pack(side="right", padx=(10, 0))
+        close.bind("<Button-1>", lambda e: self.later())
+        ttk.Button(self, text="Больше не показывать", command=self.never).pack(side="right", padx=(8, 0))
+        ttk.Button(self, text="Поддержать", style="Accent.TButton", command=self.support).pack(side="right")
+
+    def support(self):
+        self.app.show_about()
+
+    def later(self):
+        import time as _t
+        config.set_setting("donate_snooze", _t.time() + 30 * 86400)   # напомним через месяц
+        self.destroy()
+
+    def never(self):
+        config.set_setting("donate_never", True)
+        self.destroy()
+
+
 # ---------------- главное окно ----------------
 class App:
     def __init__(self, minimized=False):
@@ -667,6 +700,13 @@ class App:
         ttk.Button(head, text="＋  Добавить облако", style="Accent.TButton",
                    command=self.add).pack(side="right")
 
+        self.banner = None
+        try:
+            if donate_due():
+                self.banner = DonateBanner(main, self)
+                self.banner.pack(fill="x", pady=(14, 0))
+        except Exception:  # noqa: BLE001
+            self.banner = None
         self.area = Scrollable(main, P["bg"])
         self.area.pack(fill="both", expand=True, pady=(16, 10))
         for i in (0, 1):

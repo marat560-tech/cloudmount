@@ -50,6 +50,22 @@ def _service_threads(acc_id: str, fs, log, cleanup=lambda: None):
     """Статус для окна программы, догрузка после сбоя, мягкое отключение."""
     state = {"stopping": False}
 
+    stats_file = os.path.join(config.local_dir("stats"), f"{acc_id}.json")
+    try:
+        with open(stats_file, encoding="utf-8") as f:
+            base_uploaded = int(json.load(f).get("uploaded", 0))
+    except (OSError, ValueError):
+        base_uploaded = 0
+    saved = {"n": 0}
+
+    def save_stats():
+        if fs.uploaded_bytes != saved["n"]:
+            saved["n"] = fs.uploaded_bytes
+            tmp = stats_file + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"uploaded": base_uploaded + fs.uploaded_bytes}, f)
+            os.replace(tmp, stats_file)
+
     def status_loop():
         while True:
             try:
@@ -57,6 +73,7 @@ def _service_threads(acc_id: str, fs, log, cleanup=lambda: None):
                 st["stopping"] = state["stopping"]
                 st["time"] = time.time()
                 _write_status(acc_id, st)
+                save_stats()
             except Exception:  # noqa: BLE001
                 pass
             time.sleep(1)
@@ -67,6 +84,10 @@ def _service_threads(acc_id: str, fs, log, cleanup=lambda: None):
         state["stopping"] = True
         log.info("Запрошено отключение: отправляю несохранённые изменения")
         failed = fs.upload_all()
+        try:
+            save_stats()
+        except Exception:  # noqa: BLE001
+            pass
         log.info("Отключение (ошибок загрузки: %d)", failed)
         for p in (stop_path(acc_id), status_path(acc_id)):
             try:

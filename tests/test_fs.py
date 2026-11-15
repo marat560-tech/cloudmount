@@ -353,3 +353,9 @@ def test_prefetch_quota_before_mount(tmp_path):
     f.prefetch_quota()
     s = f.statfs("/")                      # первый же запрос Проводника — с реальным размером
     assert s["f_blocks"] * s["f_bsize"] == 10 * 2**30
+
+
+def test_uploaded_bytes_counter(env):
+    p, f = env
+    write_file(f, "/x.bin", b"a" * 1000)
+    assert f.uploaded_bytes == 1000
