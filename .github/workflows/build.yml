@@ -37,9 +37,16 @@ jobs:
           name: CloudMount
           path: dist/CloudMount.exe
 
-      - name: Релиз (для тегов v*)
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/CloudMount.exe
-          generate_release_notes: true
+      - name: Релиз (новая версия из cloudmount/__init__.py)
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VER=$(python -c "import cloudmount; print(cloudmount.__version__)")
+          if gh release view "v$VER" >/dev/null 2>&1; then
+            echo "Релиз v$VER уже есть — пропускаю"
+          else
+            gh release create "v$VER" dist/CloudMount.exe --target "$GITHUB_SHA" \
+              --title "CloudMount $VER" --generate-notes
+          fi
