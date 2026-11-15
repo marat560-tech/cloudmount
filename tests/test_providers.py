@@ -232,3 +232,28 @@ def test_webdav_quota_falls_back_to_allprop():
         return 207, b'<d:multistatus xmlns:d="DAV:"/>', {}
     attach(p, h)
     assert p.quota() == (10, 3) and len(bodies) == 2
+
+
+def test_webdav_counts_used_space_when_no_quota():
+    p = make_provider({"type": "beeline", "data": {"username": "u", "password": "p"}})
+    no_quota = b"""<D:multistatus xmlns:D="DAV:"><D:response><D:href>/</D:href><D:propstat><D:prop>
+<D:quota-available-bytes/><D:quota-used-bytes/></D:prop><D:status>HTTP/1.1 404 Not Found</D:status>
+</D:propstat></D:response></D:multistatus>"""
+
+    def listing(*items):
+        rows = "".join(
+            f"<D:response><D:href>{h}</D:href><D:propstat><D:prop>"
+            + ("<D:resourcetype><D:collection/></D:resourcetype>" if h.endswith("/") else
+               f"<D:resourcetype/><D:getcontentlength>{n}</D:getcontentlength>")
+            + "</D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>"
+            for h, n in items)
+        return f'<D:multistatus xmlns:D="DAV:">{rows}</D:multistatus>'.encode()
+
+    def h(m, url, hdr, body):
+        if hdr.get("Depth") == "0":
+            return 207, no_quota, {}
+        if url.endswith("/sub/"):
+            return 207, listing(("/sub/", 0), ("/sub/b.bin", 500)), {}
+        return 207, listing(("/", 0), ("/a.txt", 100), ("/sub/", 0)), {}
+    attach(p, h)
+    assert p.quota() == (0, 600)

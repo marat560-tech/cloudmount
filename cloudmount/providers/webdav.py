@@ -154,6 +154,27 @@ class WebDAVProvider(HttpProvider):
                      headers={"Destination": self.url(dst, slash=entry.is_dir),
                               "Overwrite": "T"})
 
+    def used_by_walk(self, max_entries: int = 50000, max_seconds: float = 300) -> int:
+        """Если сервер не сообщает квоту — считаем занятое место сами, обходя папки."""
+        import time as _t
+        start, total, seen, stack = _t.time(), 0, 0, ["/"]
+        while stack and seen < max_entries and _t.time() - start < max_seconds:
+            path = stack.pop()
+            try:
+                entries = self.list_dir(path)
+            except Exception as e:  # noqa: BLE001
+                log.info("WebDAV: не удалось прочитать %s при подсчёте места: %s", path, e)
+                continue
+            for e in entries:
+                seen += 1
+                if e.is_dir:
+                    stack.append(path.rstrip("/") + "/" + e.name)
+                else:
+                    total += e.size
+        log.info("WebDAV: занято по подсчёту файлов %.2f ГБ (%d объектов%s)", total / 2**30, seen,
+                 ", подсчёт неполный" if stack else "")
+        return total
+
     def quota(self):
         used = 0
         for body in (QUOTA_BODY, ALLPROP_BODY):
@@ -167,7 +188,9 @@ class WebDAVProvider(HttpProvider):
             used = used or used2
             if total:
                 return total, used
-            log.info("WebDAV: сервер не сообщил размер. Ответ: %s", r.text[:600])
+            log.debug("WebDAV: сервер не сообщил размер. Ответ: %s", r.text[:600])
+        if not used:
+            used = self.used_by_walk()
         return 0, used
 
 

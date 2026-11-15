@@ -765,7 +765,7 @@ class CloudFS(Operations):
         """Размер из кэша; обновление — в фоне, Проводник никогда долго не ждёт сервер."""
         t, q = self._quota
         busy = getattr(self, "_quota_busy", False)
-        if time.time() - t > 120 and not busy:
+        if time.time() - t > (120 if q[0] else 3600) and not busy:
             self._quota_busy = busy = True
             threading.Thread(target=self._refresh_quota, daemon=True, name="quota").start()
         if t == 0 and busy:

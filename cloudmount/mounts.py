@@ -154,6 +154,10 @@ class MountManager:
         if total:
             note = f"Занято {used / gb:.1f} из {total / gb:.1f} ГБ".replace(".", ",")
             pct = min(100, int(used * 100 / total))
+        elif used:
+            note = (f"Занято {used / gb:.1f} ГБ".replace(".", ",")
+                    + " · объём облака неизвестен — укажите в настройках диска")
+            pct = 0
         else:
             note, pct = "Подключён", 0
         if st.get("unsaved"):
