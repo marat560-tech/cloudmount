@@ -1,9 +1,8 @@
-name: Сборка CloudMount.exe
+name: Сборка CloudMount
 
 on:
   push:
     branches: [main]
-    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
@@ -12,6 +11,9 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
 
@@ -22,24 +24,48 @@ jobs:
       - name: Зависимости
         run: python -m pip install -r requirements.txt pyinstaller pytest
 
-      - name: Тесты
-        run: python -m pytest -q tests
+      - name: Тесты (включая окно программы)
+        run: |
+          set -o pipefail
+          python -m pytest -q -rfE tests 2>&1 | tee pytest.log || {
+            grep -E "^(FAILED|ERROR)|Error|assert" pytest.log | head -30 | sed 's/^/::error::/'
+            exit 1
+          }
 
-      - name: Сборка exe
+      - name: Сборка CloudMount.exe
         run: >
           python -m PyInstaller --noconfirm --onefile --noconsole
           --name CloudMount --icon assets/icon.ico --add-data "assets;assets"
           --hidden-import pystray._win32 --hidden-import mfusepy
-          --collect-submodules cloudmount main.py
+          --collect-data sv_ttk --collect-submodules cloudmount main.py
+
+      - name: WinFsp для установщика
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p build
+          gh release download --repo winfsp/winfsp --pattern "winfsp-*.msi" --dir build
+          mv build/winfsp-*.msi build/winfsp.msi
+          ls -la build
+
+      - name: Установщик CloudMount-Setup.exe
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          $env:CM_VERSION = python -c "import cloudmount; print(cloudmount.__version__)"
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer\cloudmount.iss
+          if ($LASTEXITCODE -ne 0) { echo "::error::Inno Setup failed"; exit 1 }
+          Get-ChildItem dist
 
       - uses: actions/upload-artifact@v4
         with:
           name: CloudMount
-          path: dist/CloudMount.exe
+          path: |
+            dist/CloudMount-Setup.exe
+            dist/CloudMount.exe
 
       - name: Релиз (новая версия из cloudmount/__init__.py)
-        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
-        shell: bash
+        if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -47,6 +73,6 @@ jobs:
           if gh release view "v$VER" >/dev/null 2>&1; then
             echo "Релиз v$VER уже есть — пропускаю"
           else
-            gh release create "v$VER" dist/CloudMount.exe --target "$GITHUB_SHA" \
-              --title "CloudMount $VER" --generate-notes
+            gh release create "v$VER" dist/CloudMount-Setup.exe dist/CloudMount.exe \
+              --target "$GITHUB_SHA" --title "CloudMount $VER" --notes-file RELEASE_NOTES.md
           fi

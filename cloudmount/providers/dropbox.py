@@ -30,7 +30,13 @@ class DropboxProvider(OAuthProvider):
     kind = "dropbox"
     title = "Dropbox"
     token_url = "https://api.dropboxapi.com/oauth2/token"
+    note = "API v2"
+    tint = "#5560C9"
     fields = [("client_id", "App key", False, "")]
+    hint = ("Create app → Scoped access → Full Dropbox. В Settings → Redirect URIs\n"
+            "добавьте http://127.0.0.1:53682/, в Permissions отметьте\n"
+            "files.metadata.read/write и files.content.read/write.")
+    links = [("Dropbox App Console", "https://www.dropbox.com/developers/apps")]
 
     @classmethod
     def login(cls, data, cancel_event=None):

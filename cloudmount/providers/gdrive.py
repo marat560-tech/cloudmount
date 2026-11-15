@@ -30,10 +30,18 @@ class GDriveProvider(OAuthProvider):
     kind = "gdrive"
     title = "Google Drive"
     token_url = "https://oauth2.googleapis.com/token"
+    note = "Drive API"
+    tint = "#2E8B6E"
     fields = [
         ("client_id", "Client ID", False, ""),
         ("client_secret", "Client secret", True, ""),
     ]
+    hint = ("1) Включите Google Drive API. 2) Экран согласия: External, добавьте себя\n"
+            "в Test users. 3) Clients → Create client → тип «Desktop app».")
+    links = [("Включить Google Drive API",
+              "https://console.cloud.google.com/apis/library/drive.googleapis.com"),
+             ("Экран согласия и тестовые пользователи", "https://console.cloud.google.com/auth/audience"),
+             ("Создать OAuth-клиент", "https://console.cloud.google.com/auth/clients")]
 
     def __init__(self, data, save=None):
         super().__init__(data, save)

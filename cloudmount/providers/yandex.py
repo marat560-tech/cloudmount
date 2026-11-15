@@ -23,10 +23,16 @@ class YandexProvider(OAuthProvider):
     title = "Яндекс Диск"
     token_url = "https://oauth.yandex.ru/token"
     auth_scheme = "OAuth"
+    note = "REST API"
+    tint = "#3B6FD8"
     fields = [
         ("client_id", "ClientID приложения", False, ""),
         ("client_secret", "Client secret", True, ""),
     ]
+    hint = ("Создайте приложение (платформа «Веб-сервисы»),\n"
+            "Redirect URI: http://127.0.0.1:53682/\n"
+            "Доступы: cloud_api:disk.read, cloud_api:disk.write, cloud_api:disk.info.")
+    links = [("Создать приложение Яндекса", "https://oauth.yandex.ru/client/new")]
 
     @classmethod
     def login(cls, data, cancel_event=None):

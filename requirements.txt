@@ -2,3 +2,5 @@ requests>=2.31
 mfusepy>=1.1,<4
 pystray>=0.19
 Pillow>=10.0
+sv-ttk>=2.6
+paramiko>=3.2

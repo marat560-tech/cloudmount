@@ -15,6 +15,10 @@ import requests
 PORT = 53682
 REDIRECT_URI = f"http://127.0.0.1:{PORT}/"
 
+
+def redirect_uri(host: str = "127.0.0.1") -> str:
+    return f"http://{host}:{PORT}/"
+
 _PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>CloudMount</title></head>
 <body style="font-family:sans-serif;text-align:center;margin-top:15%">
 <h2>{msg}</h2><p>Окно можно закрыть и вернуться в CloudMount.</p></body></html>"""
@@ -39,10 +43,13 @@ class OAuthCancelled(Exception):
 def browser_login(authorize_url: str, token_url: str, client_id: str,
                   client_secret: str | None = None, params: dict | None = None,
                   pkce: bool = False, timeout: int = 300,
-                  cancel_event: threading.Event | None = None) -> dict:
+                  cancel_event: threading.Event | None = None,
+                  redirect_host: str = "127.0.0.1", token_in_query: bool = False,
+                  parse_token=None) -> dict:
     state = secrets.token_urlsafe(16)
+    redirect = redirect_uri(redirect_host)
     q = {"response_type": "code", "client_id": client_id,
-         "redirect_uri": REDIRECT_URI, "state": state}
+         "redirect_uri": redirect, "state": state}
     verifier = None
     if pkce:
         verifier = secrets.token_urlsafe(64)
@@ -57,6 +64,7 @@ def browser_login(authorize_url: str, token_url: str, client_id: str,
         def do_GET(self):
             qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             if "code" in qs or "error" in qs:
+                result["params"] = {k: v[0] for k, v in qs.items()}
                 if qs.get("state", [""])[0] != state:
                     result["error"] = "Неверный параметр state"
                 elif "error" in qs:
@@ -95,12 +103,22 @@ def browser_login(authorize_url: str, token_url: str, client_id: str,
         raise TimeoutError("Время ожидания входа истекло")
 
     form = {"grant_type": "authorization_code", "code": result["code"],
-            "redirect_uri": REDIRECT_URI, "client_id": client_id}
+            "redirect_uri": redirect, "client_id": client_id}
     if client_secret:
         form["client_secret"] = client_secret
     if verifier:
         form["code_verifier"] = verifier
-    r = requests.post(token_url, data=form, timeout=30)
+    if callable(token_url):     # адрес зависит от ответа (pCloud: США или Европа)
+        token_url = token_url(result.get("params", {}))
+    if token_in_query:      # pCloud принимает параметры в строке запроса
+        r = requests.get(token_url, params=form, timeout=30)
+    else:
+        r = requests.post(token_url, data=form, timeout=30)
     if r.status_code != 200:
         raise RuntimeError(f"Обмен кода на токен не удался: {r.status_code} {r.text[:300]}")
-    return token_from_response(r.json())
+    js = r.json()
+    if parse_token is not None:
+        return parse_token(js)
+    if "access_token" not in js:
+        raise RuntimeError(f"Сервис не выдал токен: {str(js)[:300]}")
+    return token_from_response(js)

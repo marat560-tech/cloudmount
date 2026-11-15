@@ -413,6 +413,8 @@ class CloudFS(Operations):
             "open": sorted({s.name for s in states if s.refs > 0}),
             "unsaved": sorted({s.name for s in states if s.dirty and not s.deleted}),
             "pending": len(self.pending()),
+            "total": self.disk_size()[0] if (self.size_override or self._quota[1][0]) else 0,
+            "used": self._quota[1][1],
         }
 
     def upload_all(self) -> int:
@@ -741,20 +743,36 @@ class CloudFS(Operations):
             self._cache_put(dreal, moved)
         return 0
 
-    @op
-    def statfs(self, path):
-        t, (total, used) = self._quota
-        if time.time() - t > 60:
-            try:
-                total, used = self.p.quota()
-            except Exception as e:  # noqa: BLE001
-                log.debug("quota: %s", e)
-            self._quota = (time.time(), (total, used))
-        bs = 4096
+    def _refresh_quota(self):
+        try:
+            total, used = self.p.quota()
+            self._quota = (time.time(), (int(total or 0), int(used or 0)))
+        except Exception as e:  # noqa: BLE001
+            log.info("Размер облака не получен: %s", e)
+            self._quota = (time.time(), self._quota[1])
+        finally:
+            self._quota_busy = False
+
+    def quota_cached(self) -> tuple[int, int]:
+        """Размер из кэша; обновление — в фоне, Проводник никогда не ждёт сервер."""
+        t, q = self._quota
+        if time.time() - t > 120 and not getattr(self, "_quota_busy", False):
+            self._quota_busy = True
+            threading.Thread(target=self._refresh_quota, daemon=True, name="quota").start()
+        return q
+
+    def disk_size(self) -> tuple[int, int]:
+        total, used = self.quota_cached()
         if self.size_override:
             total = self.size_override          # размер задан вручную в настройках
         elif total <= 0:
             total = max(used, 0) + (1 << 40)    # облако не сообщает — условный 1 ТБ
+        return total, used
+
+    @op
+    def statfs(self, path):
+        total, used = self.disk_size()
+        bs = 4096
         free = max(total - used, 0)
         return {"f_bsize": bs, "f_frsize": bs, "f_blocks": total // bs,
                 "f_bfree": free // bs, "f_bavail": free // bs,

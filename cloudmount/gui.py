@@ -1,52 +1,132 @@
-"""Окно управления дисками + значок в трее."""
+"""Окно CloudMount: карточки дисков, добавление облака плитками, трей.
+
+Оформление — тема Sun Valley (как в Windows 11), светлая или тёмная по настройкам
+Windows. Если пакета sv_ttk нет, используется стандартная тема.
+"""
 from __future__ import annotations
 
-import json
 import os
 import queue
-import time
 import string
-import subprocess
 import sys
 import threading
 import tkinter as tk
 import webbrowser
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
 from . import about, config
 from .fusecompat import winfsp_dll
-from .oauth import REDIRECT_URI
+from .icons import draw as draw_icon
+from .mounts import MountManager
+from .oauth import redirect_uri
 from .providers import PROVIDERS, make_provider
+from .ui_clip import enable_clipboard
 
 try:
     import pystray
-    from PIL import Image, ImageDraw
 except Exception:  # noqa: BLE001
     pystray = None
+try:
+    from PIL import ImageTk
+except Exception:  # noqa: BLE001
+    ImageTk = None
+try:
+    import sv_ttk
+except Exception:  # noqa: BLE001
+    sv_ttk = None
 
 IS_WIN = sys.platform == "win32"
-CREATE_NO_WINDOW = 0x08000000
+TEST_MODE = os.environ.get("CLOUDMOUNT_TEST") == "1"
+FONT = "Segoe UI"
 
-HINTS = {
-    "yandex": "Создайте приложение на oauth.yandex.ru (платформа «Веб-сервисы»),\n"
-              f"Redirect URI: {REDIRECT_URI}\n"
-              "Доступы: Яндекс Диск REST API — чтение, запись, информация о Диске.",
-    "beeline": "Включите WebDAV: cloudbeeline.ru → «Профиль и настройки» →\n"
-               "«Безопасность» → «Доступ через WebDAV». Там же логин и пароль.",
-    "dropbox": "Создайте приложение на dropbox.com/developers/apps (Full Dropbox),\n"
-               f"в Redirect URIs добавьте {REDIRECT_URI}\n"
-               "Права: files.metadata.read/write, files.content.read/write.",
-    "gdrive": "console.cloud.google.com → включите Google Drive API →\n"
-              "OAuth-клиент типа «Desktop app». Добавьте себя в тестовые пользователи.",
-    "webdav": "Любой WebDAV-сервер: Nextcloud, Mail.ru (платно), webdav.yandex.ru и др.",
-}
 
-EXIT_CODES = {
-    2: "аккаунт не найден",
-    3: "не установлен WinFsp",
-    4: "нет связи с облаком или ошибка входа",
-    5: "не удалось создать диск (буква занята?)",
-}
+# ---------------- оформление ----------------
+def system_dark() -> bool:
+    if not IS_WIN:
+        return False
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize") as k:
+            return winreg.QueryValueEx(k, "AppsUseLightTheme")[0] == 0
+    except OSError:
+        return False
+
+
+LIGHT = {"bg": "#F3F3F3", "card": "#FFFFFF", "ink": "#1B1B1B", "muted": "#5C5C5C",
+         "line": "#E2E2E2", "hover": "#F5F8FE", "accent": "#2F7BF0", "sel": "#E8F0FE",
+         "ok": ("#DFF6E6", "#0F6B33"), "busy": ("#E3EDFD", "#1450B8"),
+         "off": ("#EDEDED", "#4A4A4A"), "error": ("#FDE7E7", "#A3261B"), "link": "#1A66E0"}
+DARK = {"bg": "#202020", "card": "#2B2B2B", "ink": "#F3F3F3", "muted": "#B3B3B3",
+        "line": "#3A3A3A", "hover": "#323840", "accent": "#4C8DF6", "sel": "#22344F",
+        "ok": ("#1F3B2A", "#7FD79D"), "busy": ("#1E3354", "#9EC2FF"),
+        "off": ("#3A3A3A", "#C8C8C8"), "error": ("#4A2222", "#FFA8A0"), "link": "#8AB4FF"}
+P = dict(LIGHT)
+
+
+def apply_theme(root: tk.Tk):
+    dark = system_dark()
+    P.clear()
+    P.update(DARK if dark else LIGHT)
+    if sv_ttk is not None:
+        try:
+            sv_ttk.set_theme("dark" if dark else "light")
+        except Exception:  # noqa: BLE001
+            pass
+    else:
+        try:
+            ttk.Style(root).theme_use("vista" if IS_WIN else "clam")
+        except tk.TclError:
+            pass
+    root.configure(bg=P["bg"])
+    st = ttk.Style(root)
+    st.configure("Muted.TLabel", foreground=P["muted"])
+    st.configure("Title.TLabel", font=(FONT, 20, "bold"))
+    st.configure("H2.TLabel", font=(FONT, 13, "bold"))
+
+
+def dark_titlebar(win: tk.Misc):
+    """Тёмная рамка окна в Windows 10/11 при тёмной теме."""
+    if not IS_WIN or P is LIGHT or P.get("bg") != DARK["bg"]:
+        return
+    try:
+        import ctypes
+        win.update_idletasks()
+        hwnd = ctypes.windll.user32.GetParent(win.winfo_id())
+        val = ctypes.c_int(1)
+        for attr in (20, 19):
+            if ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, attr, ctypes.byref(val), 4) == 0:
+                break
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def resource(*parts) -> str:
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return os.path.join(base, *parts)
+
+
+def set_window_icon(win: tk.Misc, cache: dict):
+    ico = resource("assets", "icon.ico")
+    try:
+        if IS_WIN and os.path.exists(ico):
+            win.iconbitmap(default=ico)
+        if ImageTk is not None and "app" not in cache:
+            cache["app"] = ImageTk.PhotoImage(draw_icon("#2176FF", 64))
+        if "app" in cache:
+            win.iconphoto(True, cache["app"])
+    except tk.TclError:
+        pass
+
+
+_img_cache: dict = {}
+
+
+def tile_image(cls, size=40):
+    key = (cls.kind, size)
+    if key not in _img_cache and ImageTk is not None:
+        _img_cache[key] = ImageTk.PhotoImage(draw_icon(cls.tint, size, cls.icon))
+    return _img_cache.get(key)
 
 
 def used_letters() -> set[str]:
@@ -68,274 +148,241 @@ def open_path(p: str):
         webbrowser.open("file://" + p)
 
 
-# ---------------- буфер обмена ----------------
-# Tk не понимает Ctrl+V/C/X/A при русской раскладке (keysym другой), а меню по
-# правой кнопке у полей ввода нет. Добавляем и то, и другое для всех полей.
-_KEYCODES = {86: "<<Paste>>", 67: "<<Copy>>", 88: "<<Cut>>"}   # V, C, X (коды Windows)
+def link(parent, text, url, bg=None):
+    """Кликабельная ссылка."""
+    lab = tk.Label(parent, text=text, fg=P["link"], bg=bg or P["bg"], cursor="hand2",
+                   font=(FONT, 10, "underline"), anchor="w", justify="left")
+    lab.bind("<Button-1>", lambda e: webbrowser.open(url))
+    return lab
 
 
-def _on_ctrl_key(event):
-    w = event.widget
-    if event.keycode == 65:                       # Ctrl+A — выделить всё
+class Scrollable(tk.Frame):
+    """Прокручиваемая область для карточек и плиток."""
+
+    def __init__(self, master, bg):
+        super().__init__(master, bg=bg)
+        self.canvas = tk.Canvas(self, bg=bg, highlightthickness=0, bd=0)
+        self.bar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.inner = tk.Frame(self.canvas, bg=bg)
+        self.win = self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
+        self.canvas.configure(yscrollcommand=self.bar.set)
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.bar.pack(side="right", fill="y")
+        self.inner.bind("<Configure>", lambda e: self.canvas.configure(
+            scrollregion=self.canvas.bbox("all")))
+        self.canvas.bind("<Configure>", lambda e: self.canvas.itemconfigure(self.win, width=e.width))
+        self.bind_all("<MouseWheel>", self._wheel, add="+")
+
+    def _wheel(self, e):
         try:
-            w.select_range(0, "end")
-            w.icursor("end")
-        except tk.TclError:
-            pass
-        return "break"
-    virtual = _KEYCODES.get(event.keycode)
-    if virtual and event.keysym.lower() not in ("v", "c", "x"):
-        w.event_generate(virtual)                 # не латинская раскладка
-        return "break"
-    return None
-
-
-def _show_menu(event):
-    w = event.widget
-    readonly = str(w.cget("state")) in ("readonly", "disabled")
-    m = tk.Menu(w, tearoff=0)
-    m.add_command(label="Вырезать", state="disabled" if readonly else "normal",
-                  command=lambda: w.event_generate("<<Cut>>"))
-    m.add_command(label="Копировать", command=lambda: w.event_generate("<<Copy>>"))
-    m.add_command(label="Вставить", state="disabled" if readonly else "normal",
-                  command=lambda: w.event_generate("<<Paste>>"))
-    m.add_separator()
-    m.add_command(label="Выделить всё", command=lambda: w.select_range(0, "end"))
-    w.focus_set()
-    m.tk_popup(event.x_root, event.y_root)
-
-
-def enable_clipboard(root: tk.Misc):
-    for cls in ("TEntry", "Entry", "TCombobox"):
-        root.bind_class(cls, "<Control-KeyPress>", _on_ctrl_key, add="+")
-        root.bind_class(cls, "<Button-3>", _show_menu, add="+")
-
-
-# ---------------- монтирование ----------------
-class MountManager:
-    """Процессы дисков. Отключение — мягкое: процесс сначала отправляет изменения."""
-
-    def __init__(self):
-        self.procs: dict[str, subprocess.Popen] = {}
-        self.errors: dict[str, str] = {}
-        self.stopping: set[str] = set()
-        self.restart: dict[str, dict] = {}
-
-    @staticmethod
-    def _cmd(acc_id):
-        if getattr(sys, "frozen", False):
-            return [sys.executable, "--mount", acc_id]
-        main = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "main.py")
-        return [sys.executable, main, "--mount", acc_id]
-
-    @staticmethod
-    def _run_file(acc_id, ext):
-        return os.path.join(config.local_dir("run"), f"{acc_id}.{ext}")
-
-    def running(self, acc_id) -> bool:
-        p = self.procs.get(acc_id)
-        return p is not None and p.poll() is None
-
-    def any_running(self) -> bool:
-        return any(self.running(a) for a in list(self.procs))
-
-    def mount(self, acc):
-        if acc["id"] in self.stopping and self.running(acc["id"]):
-            self.restart[acc["id"]] = acc       # подключим, когда старый процесс закончит
+            if not self.winfo_exists():
+                return
+            w = self.winfo_containing(e.x_root, e.y_root)
+        except (tk.TclError, KeyError):
             return
-        if self.running(acc["id"]):
-            return
-        self.errors.pop(acc["id"], None)
-        kw = {"creationflags": CREATE_NO_WINDOW} if IS_WIN else {}
-        self.procs[acc["id"]] = subprocess.Popen(
-            self._cmd(acc["id"]), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL, **kw)
-
-    def unmount(self, acc_id, force=False):
-        p = self.procs.get(acc_id)
-        if p is None or p.poll() is not None:
-            return
-        if force:
-            p.terminate()
-            try:
-                p.wait(5)
-            except subprocess.TimeoutExpired:
-                p.kill()
-            return
-        self.stopping.add(acc_id)
-        with open(self._run_file(acc_id, "stop"), "w") as f:
-            f.write("stop")
-
-    def unmount_all(self, force=False):
-        for acc_id in list(self.procs):
-            self.unmount(acc_id, force)
-
-    def info(self, acc_id) -> dict:
-        """Статус из процесса диска (что загружается, что открыто)."""
-        try:
-            path = self._run_file(acc_id, "status")
-            if time.time() - os.path.getmtime(path) > 10:
-                return {}
-            with open(path, encoding="utf-8") as f:
-                return json.load(f)
-        except (OSError, ValueError):
-            return {}
-
-    def poll(self):
-        """Проверяет завершившиеся процессы. Вызывать периодически."""
-        for acc_id, p in list(self.procs.items()):
-            code = p.poll()
-            if code is None:
-                continue
-            del self.procs[acc_id]
-            was_stopping = acc_id in self.stopping
-            self.stopping.discard(acc_id)
-            if code != 0 and not was_stopping:
-                self.errors[acc_id] = EXIT_CODES.get(code, f"код {code}") + " — см. журнал"
-            acc = self.restart.pop(acc_id, None)
-            if acc is not None:
-                self.mount(acc)
-
-    def status(self, acc) -> str:
-        acc_id = acc["id"]
-        if not self.running(acc_id):
-            err = self.errors.get(acc_id)
-            return f"Ошибка: {err}" if err else "Отключён"
-        st = self.info(acc_id)
-        up = ""
-        if st.get("uploading"):
-            up = f"загрузка «{st['uploading']}» {st.get('percent', 0)}%"
-        if acc_id in self.stopping:
-            return "Отключение: " + (up or "отправка изменений…")
-        letter = (acc.get("letter") or "").upper()
-        if letter and IS_WIN and not os.path.exists(f"{letter}:\\"):
-            return "Подключение…"
-        text = f"Подключён ({letter}:)" if letter else "Подключён"
-        if up:
-            text += " · " + up
-        elif st.get("unsaved"):
-            text += f" · ждут загрузки при закрытии: {', '.join(st['unsaved'][:2])}"
-        elif st.get("pending"):
-            text += f" · догружается после сбоя: {st['pending']}"
-        return text
+        while w is not None:
+            if w is self:
+                self.canvas.yview_scroll(int(-e.delta / 120), "units")
+                return
+            w = w.master
 
 
-# ---------------- диалог аккаунта ----------------
-class AccountDialog(tk.Toplevel):
-    def __init__(self, master, acc: dict | None, taken_letters: set[str]):
-        super().__init__(master)
+# ---------------- выбор облака ----------------
+class AddCloudDialog(tk.Toplevel):
+    def __init__(self, master):
+        super().__init__(master, bg=P["bg"])
         self.transient(master)
-        self.title("Изменить диск" if acc else "Новый диск")
+        self.title("Добавить облако")
+        self.geometry("760x600")
+        self.minsize(560, 420)
+        self.result = None
+        body = ttk.Frame(self, padding=(24, 18, 24, 0))
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text="Какое облако подключить?", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(body, text="Выберите сервис — дальше программа подскажет, что ввести.",
+                  style="Muted.TLabel").pack(anchor="w", pady=(2, 12))
+        self.q = tk.StringVar()
+        e = ttk.Entry(body, textvariable=self.q)
+        e.pack(fill="x")
+        e.insert(0, "")
+        self.q.trace_add("write", lambda *a: self._fill())
+        self.area = Scrollable(body, P["bg"])
+        self.area.pack(fill="both", expand=True, pady=(12, 0))
+        foot = ttk.Frame(self, padding=(24, 12))
+        foot.pack(fill="x")
+        ttk.Button(foot, text="Отмена", command=self.destroy).pack(side="right")
+        self._fill()
+        e.focus_set()
+        dark_titlebar(self)
+        self.grab_set()
+
+    def _fill(self):
+        for w in self.area.inner.winfo_children():
+            w.destroy()
+        q = self.q.get().strip().lower()
+        kinds = [k for k, c in PROVIDERS.items() if not q or q in (c.title + " " + c.note).lower()]
+        cols = 4
+        for i in range(cols):
+            self.area.inner.grid_columnconfigure(i, weight=1, uniform="t")
+        for i, kind in enumerate(kinds):
+            self._tile(kind).grid(row=i // cols, column=i % cols, sticky="nsew", padx=5, pady=5)
+        if not kinds:
+            tk.Label(self.area.inner, text="Ничего не найдено", bg=P["bg"], fg=P["muted"],
+                     font=(FONT, 10)).grid(row=0, column=0, sticky="w")
+
+    def _tile(self, kind):
+        cls = PROVIDERS[kind]
+        f = tk.Frame(self.area.inner, bg=P["card"], highlightthickness=1,
+                     highlightbackground=P["line"], cursor="hand2", padx=12, pady=12)
+        img = tile_image(cls, 34)
+        parts = [f]
+        if img is not None:
+            il = tk.Label(f, image=img, bg=P["card"])
+            il.pack(anchor="w")
+            parts.append(il)
+        t = tk.Label(f, text=cls.title, bg=P["card"], fg=P["ink"], font=(FONT, 10, "bold"),
+                     anchor="w")
+        t.pack(anchor="w", pady=(8, 0))
+        n = tk.Label(f, text=cls.note, bg=P["card"], fg=P["muted"], font=(FONT, 8), anchor="w",
+                     wraplength=150, justify="left")
+        n.pack(anchor="w")
+        parts += [t, n]
+
+        def pick(e=None):
+            self.result = kind
+            self.destroy()
+
+        def hover(on):
+            color = P["hover"] if on else P["card"]
+            for w in parts:
+                w.configure(bg=color)
+            f.configure(highlightbackground=P["accent"] if on else P["line"])
+        for w in parts:
+            w.bind("<Button-1>", pick)
+            w.bind("<Enter>", lambda e: hover(True))
+            w.bind("<Leave>", lambda e: hover(False))
+        return f
+
+
+# ---------------- настройки диска ----------------
+class AccountDialog(tk.Toplevel):
+    def __init__(self, master, acc: dict, taken_letters: set[str], new: bool):
+        super().__init__(master, bg=P["bg"])
+        self.transient(master)
+        self.cls = PROVIDERS[acc["type"]]
+        self.title(("Новый диск — " if new else "Настройки — ") + self.cls.title)
         self.resizable(False, False)
         self.result = None
-        self.acc = acc or config.new_account("yandex")
-        self.data = dict(self.acc.get("data") or {})
+        self.acc = acc
+        self.data = dict(acc.get("data") or {})
         self.token = self.data.get("token")
         self.q: queue.Queue = queue.Queue()
         self.cancel = threading.Event()
         self.vars: dict[str, tk.StringVar] = {}
 
-        frm = ttk.Frame(self, padding=12)
+        frm = ttk.Frame(self, padding=(24, 18, 24, 18))
         frm.grid(sticky="nsew")
-        kinds = list(PROVIDERS)
-        titles = [PROVIDERS[k].title for k in kinds]
-        self.kinds = kinds
+        frm.columnconfigure(1, weight=1)
+        head = ttk.Frame(frm)
+        head.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 12))
+        img = tile_image(self.cls, 40)
+        if img is not None:
+            tk.Label(head, image=img, bg=P["bg"]).pack(side="left", padx=(0, 12))
+        ttk.Label(head, text=self.cls.title, style="Title.TLabel").pack(side="left")
 
-        ttk.Label(frm, text="Облако:").grid(row=0, column=0, sticky="w", pady=2)
-        self.kind_var = tk.StringVar(value=PROVIDERS[self.acc["type"]].title)
-        cb = ttk.Combobox(frm, textvariable=self.kind_var, values=titles, state="readonly", width=34)
-        cb.grid(row=0, column=1, sticky="we", pady=2)
-        if acc:
-            cb.configure(state="disabled")
-        cb.bind("<<ComboboxSelected>>", lambda e: self._kind_changed())
-
-        ttk.Label(frm, text="Название:").grid(row=1, column=0, sticky="w", pady=2)
-        self.name_var = tk.StringVar(value=self.acc.get("name", ""))
-        ttk.Entry(frm, textvariable=self.name_var, width=36).grid(row=1, column=1, sticky="we", pady=2)
-
-        ttk.Label(frm, text="Буква диска:").grid(row=2, column=0, sticky="w", pady=2)
-        cur = (self.acc.get("letter") or "").upper()
+        r = 1
+        ttk.Label(frm, text="Название").grid(row=r, column=0, sticky="w", pady=4)
+        self.name_var = tk.StringVar(value=acc.get("name") or self.cls.title)
+        ttk.Entry(frm, textvariable=self.name_var, width=40).grid(row=r, column=1, sticky="we", pady=4)
+        r += 1
+        ttk.Label(frm, text="Буква диска").grid(row=r, column=0, sticky="w", pady=4)
+        cur = (acc.get("letter") or "").upper()
         busy = (used_letters() | taken_letters) - {cur}
         letters = [c for c in "DEFGHIJKLMNOPQRSTUVWXYZ" if c not in busy]
         self.letter_var = tk.StringVar(value=cur or (letters[-1] if letters else ""))
         ttk.Combobox(frm, textvariable=self.letter_var, values=letters, state="readonly",
-                     width=6).grid(row=2, column=1, sticky="w", pady=2)
+                     width=6).grid(row=r, column=1, sticky="w", pady=4)
+        r += 1
 
-        self.auto_var = tk.BooleanVar(value=self.acc.get("automount", True))
-        ttk.Checkbutton(frm, text="Подключать при запуске", variable=self.auto_var
-                        ).grid(row=3, column=1, sticky="w")
-        self.net_var = tk.BooleanVar(value=self.acc.get("netdrive", True))
-        ttk.Checkbutton(frm, text="Показывать как сетевой диск", variable=self.net_var
-                        ).grid(row=4, column=1, sticky="w")
+        box = ttk.LabelFrame(frm, text="Подключение", padding=12)
+        box.grid(row=r, column=0, columnspan=2, sticky="we", pady=(10, 6))
+        box.columnconfigure(1, weight=1)
+        br = 0
+        for key, label, secret, default in self.cls.fields:
+            ttk.Label(box, text=label).grid(row=br, column=0, sticky="w", pady=3, padx=(0, 10))
+            v = tk.StringVar(value=self.data.get(key, default))
+            ttk.Entry(box, textvariable=v, width=38, show="•" if secret else ""
+                      ).grid(row=br, column=1, sticky="we", pady=3)
+            self.vars[key] = v
+            br += 1
+        if self.cls.hint:
+            hint = self.cls.hint
+            if self.cls.oauth:
+                hint = hint.replace("http://127.0.0.1:53682/", redirect_uri(self.cls.redirect_host))
+            tk.Label(box, text=hint, bg=P["bg"], fg=P["muted"], justify="left", anchor="w",
+                     font=(FONT, 9)).grid(row=br, column=0, columnspan=2, sticky="w", pady=(8, 2))
+            br += 1
+        for text, url in self.cls.links:
+            link(box, "↗ " + text, url).grid(row=br, column=0, columnspan=2, sticky="w")
+            br += 1
+        if self.cls.oauth:
+            ttk.Button(box, text="Войти через браузер", style="Accent.TButton",
+                       command=self._login).grid(row=br, column=0, columnspan=2, sticky="w", pady=(10, 0))
+            br += 1
+        r += 1
 
-        self.defer_var = tk.BooleanVar(value=self.acc.get("defer_large", True))
-        ttk.Checkbutton(frm, variable=self.defer_var,
-                        text="Большие файлы (от 64 МБ, контейнеры VeraCrypt)\n"
-                             "отправлять в облако только при закрытии"
-                        ).grid(row=5, column=1, sticky="w")
-
-        size_row = ttk.Frame(frm)
-        size_row.grid(row=6, column=1, sticky="w", pady=(4, 0))
-        self.size_var = tk.StringVar(value=str(self.acc.get("size_gb") or ""))
-        ttk.Entry(size_row, textvariable=self.size_var, width=7).pack(side="left")
-        ttk.Label(size_row, text=" ГБ — размер диска (пусто = как сообщает облако)"
-                  ).pack(side="left")
-        ttk.Label(frm, text="Размер:").grid(row=6, column=0, sticky="w", pady=(4, 0))
-
-        self.fields_frame = ttk.LabelFrame(frm, text="Подключение", padding=8)
-        self.fields_frame.grid(row=7, column=0, columnspan=2, sticky="we", pady=(8, 4))
+        opts = ttk.LabelFrame(frm, text="Дополнительно", padding=12)
+        opts.grid(row=r, column=0, columnspan=2, sticky="we", pady=6)
+        self.auto_var = tk.BooleanVar(value=acc.get("automount", True))
+        self.net_var = tk.BooleanVar(value=acc.get("netdrive", True))
+        self.defer_var = tk.BooleanVar(value=acc.get("defer_large", True))
+        for text, var in (("Подключать при запуске программы", self.auto_var),
+                          ("Показывать как сетевой диск", self.net_var),
+                          ("Большие файлы (от 64 МБ, контейнеры VeraCrypt) отправлять\n"
+                           "в облако только при закрытии", self.defer_var)):
+            ttk.Checkbutton(opts, text=text, variable=var).pack(anchor="w", pady=2)
+        row = ttk.Frame(opts)
+        row.pack(anchor="w", pady=(6, 0), fill="x")
+        ttk.Label(row, text="Размер диска, ГБ").pack(side="left")
+        self.size_var = tk.StringVar(value=str(acc.get("size_gb") or ""))
+        ttk.Entry(row, textvariable=self.size_var, width=8).pack(side="left", padx=8)
+        ttk.Label(row, text="пусто — как сообщает облако", style="Muted.TLabel").pack(side="left")
+        row2 = ttk.Frame(opts)
+        row2.pack(anchor="w", pady=(6, 0), fill="x")
+        ttk.Label(row2, text="Значок диска (.ico)").pack(side="left")
+        self.icon_var = tk.StringVar(value=acc.get("icon_path") or "")
+        ttk.Entry(row2, textvariable=self.icon_var, width=26).pack(side="left", padx=8)
+        ttk.Button(row2, text="Обзор…", command=self._pick_icon).pack(side="left")
+        ttk.Label(opts, text="Пусто — цветной значок CloudMount для этого облака.",
+                  style="Muted.TLabel").pack(anchor="w")
+        r += 1
 
         self.status_var = tk.StringVar()
-        ttk.Label(frm, textvariable=self.status_var, foreground="#555", wraplength=380
-                  ).grid(row=8, column=0, columnspan=2, sticky="w", pady=4)
-
+        ttk.Label(frm, textvariable=self.status_var, wraplength=460, style="Muted.TLabel"
+                  ).grid(row=r, column=0, columnspan=2, sticky="w", pady=(8, 4))
+        r += 1
         btns = ttk.Frame(frm)
-        btns.grid(row=9, column=0, columnspan=2, sticky="e", pady=(6, 0))
-        ttk.Button(btns, text="Проверить", command=self._test).pack(side="left", padx=3)
-        ttk.Button(btns, text="Сохранить", command=self._ok).pack(side="left", padx=3)
-        ttk.Button(btns, text="Отмена", command=self._close).pack(side="left", padx=3)
+        btns.grid(row=r, column=0, columnspan=2, sticky="e", pady=(6, 0))
+        ttk.Button(btns, text="Проверить", command=self._test).pack(side="left", padx=4)
+        ttk.Button(btns, text="Отмена", command=self._close).pack(side="left", padx=4)
+        ttk.Button(btns, text="Сохранить", style="Accent.TButton", command=self._ok
+                   ).pack(side="left", padx=4)
 
-        self._kind_changed(initial=True)
+        self._show_token_status()
         self.protocol("WM_DELETE_WINDOW", self._close)
         self.after(200, self._poll)
+        dark_titlebar(self)
         self.grab_set()
 
-    @property
-    def kind(self) -> str:
-        return self.kinds[[PROVIDERS[k].title for k in self.kinds].index(self.kind_var.get())]
-
-    def _kind_changed(self, initial=False):
-        for w in self.fields_frame.winfo_children():
-            w.destroy()
-        cls = PROVIDERS[self.kind]
-        if not initial:
-            self.data, self.token = {}, None
-        self.vars = {}
-        row = 0
-        for key, label, secret, default in cls.fields:
-            ttk.Label(self.fields_frame, text=label + ":").grid(row=row, column=0, sticky="w", pady=2)
-            v = tk.StringVar(value=self.data.get(key, default))
-            ttk.Entry(self.fields_frame, textvariable=v, width=34, show="•" if secret else ""
-                      ).grid(row=row, column=1, sticky="we", pady=2)
-            self.vars[key] = v
-            row += 1
-        hint = HINTS.get(self.kind)
-        if hint:
-            ttk.Label(self.fields_frame, text=hint, foreground="#666", justify="left"
-                      ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(6, 2))
-            row += 1
-        if cls.oauth:
-            ttk.Button(self.fields_frame, text="Войти через браузер", command=self._login
-                       ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(6, 0))
-        if self.name_var.get() in ("",) + tuple(p.title for p in PROVIDERS.values()):
-            self.name_var.set(cls.title)
-        self._show_token_status()
+    def _pick_icon(self):
+        p = filedialog.askopenfilename(parent=self, title="Значок диска",
+                                       filetypes=[("Значки", "*.ico"), ("Все файлы", "*.*")])
+        if p:
+            self.icon_var.set(os.path.normpath(p))
 
     def _show_token_status(self):
-        if PROVIDERS[self.kind].oauth:
+        if self.cls.oauth:
             self.status_var.set("Вход выполнен ✓" if self.token else "Нужно войти через браузер")
-        else:
-            self.status_var.set("")
 
     def _collect(self) -> dict:
         d = dict(self.data)
@@ -348,21 +395,21 @@ class AccountDialog(tk.Toplevel):
     def _login(self):
         d = self._collect()
         if not d.get("client_id"):
-            messagebox.showwarning("CloudMount", "Сначала укажите ключ приложения (Client ID / App key).", parent=self)
+            messagebox.showwarning("CloudMount", "Сначала укажите ключ приложения "
+                                   "(Client ID / App key).", parent=self)
             return
         self.status_var.set("Откройте браузер и разрешите доступ…")
-        cls = PROVIDERS[self.kind]
         self.cancel.clear()
 
         def work():
             try:
-                self.q.put(("token", cls.login(d, cancel_event=self.cancel)))
+                self.q.put(("token", self.cls.login(d, cancel_event=self.cancel)))
             except Exception as e:  # noqa: BLE001
-                self.q.put(("error", f"Вход не выполнен: {e}"))
+                self.q.put(("info", f"Вход не выполнен: {e}"))
         threading.Thread(target=work, daemon=True).start()
 
     def _test(self):
-        acc = {"type": self.kind, "data": self._collect()}
+        acc = {"type": self.cls.kind, "data": self._collect()}
         self.status_var.set("Проверяю…")
 
         def work():
@@ -370,11 +417,11 @@ class AccountDialog(tk.Toplevel):
                 p = make_provider(acc)
                 n = len(p.list_dir("/"))
                 total, used = p.quota()
+                gb = 2 ** 30
                 if total:
-                    q = f", занято {used / 2**30:.1f} из {total / 2**30:.1f} ГБ"
+                    q = f", занято {used / gb:.1f} из {total / gb:.1f} ГБ"
                 else:
-                    q = (", облако не сообщает свой размер — укажите его в поле «Размер»"
-                         + (f" (занято {used / 2**30:.1f} ГБ)" if used else ""))
+                    q = ", облако не сообщает свой размер — его можно указать в поле «Размер диска»"
                 self.q.put(("info", f"Работает ✓ В корне объектов: {n}{q}"))
             except Exception as e:  # noqa: BLE001
                 self.q.put(("info", f"Ошибка: {e}"))
@@ -395,16 +442,16 @@ class AccountDialog(tk.Toplevel):
             self.after(200, self._poll)
 
     def _ok(self):
-        cls = PROVIDERS[self.kind]
         d = self._collect()
         if not self.letter_var.get():
             messagebox.showwarning("CloudMount", "Выберите букву диска.", parent=self)
             return
-        for key, label, secret, _ in cls.fields:
-            if not d.get(key) and not (key == "client_secret" and self.kind == "gdrive"):
+        for key, label, secret, _ in self.cls.fields:
+            if not d.get(key) and key not in self.cls.optional \
+                    and not (key == "client_secret" and self.cls.kind == "gdrive"):
                 messagebox.showwarning("CloudMount", f"Заполните поле «{label}».", parent=self)
                 return
-        if cls.oauth and not self.token:
+        if self.cls.oauth and not self.token:
             messagebox.showwarning("CloudMount", "Нажмите «Войти через браузер».", parent=self)
             return
         size_txt = self.size_var.get().strip().replace(",", ".")
@@ -413,12 +460,18 @@ class AccountDialog(tk.Toplevel):
             if size_gb < 0:
                 raise ValueError
         except ValueError:
-            messagebox.showwarning("CloudMount", "Размер диска — число в гигабайтах, например 10.", parent=self)
+            messagebox.showwarning("CloudMount", "Размер диска — число в гигабайтах, например 10.",
+                                   parent=self)
+            return
+        icon = self.icon_var.get().strip()
+        if icon and not os.path.exists(icon):
+            messagebox.showwarning("CloudMount", "Файл значка не найден.", parent=self)
             return
         acc = dict(self.acc)
-        acc.update(type=self.kind, name=self.name_var.get().strip() or cls.title,
+        acc.update(name=self.name_var.get().strip() or self.cls.title,
                    letter=self.letter_var.get(), automount=self.auto_var.get(),
-                   netdrive=self.net_var.get(), defer_large=self.defer_var.get(), size_gb=size_gb, data=d)
+                   netdrive=self.net_var.get(), defer_large=self.defer_var.get(),
+                   size_gb=size_gb, icon_path=icon, data=d)
         self.result = acc
         self._close()
 
@@ -428,63 +481,55 @@ class AccountDialog(tk.Toplevel):
         self.destroy()
 
 
-def resource(*parts) -> str:
-    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    return os.path.join(base, *parts)
-
-
-def load_icon_image():
-    try:
-        return Image.open(resource("assets", "icon.png"))
-    except Exception:  # noqa: BLE001
-        img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-        d = ImageDraw.Draw(img)
-        blue = (33, 118, 255, 255)
-        d.ellipse((8, 26, 34, 52), fill=blue)
-        d.ellipse((20, 14, 50, 44), fill=blue)
-        d.ellipse((34, 26, 58, 52), fill=blue)
-        d.rectangle((20, 38, 46, 52), fill=blue)
-        return img
-
-
+# ---------------- о программе ----------------
 class AboutDialog(tk.Toplevel):
     def __init__(self, master):
-        super().__init__(master)
+        super().__init__(master, bg=P["bg"])
         self.transient(master)
         self.title("О программе")
         self.resizable(False, False)
-        frm = ttk.Frame(self, padding=16)
+        frm = ttk.Frame(self, padding=24)
         frm.pack(fill="both")
-        ttk.Label(frm, text=f"{about.APP_NAME} {about.VERSION}",
-                  font=("Segoe UI", 14, "bold")).pack(anchor="w")
-        ttk.Label(frm, text=about.DESCRIPTION, justify="left").pack(anchor="w", pady=(4, 8))
-        link = ttk.Label(frm, text=about.GITHUB_URL, foreground="#1a66d9", cursor="hand2")
-        link.pack(anchor="w")
-        link.bind("<Button-1>", lambda e: webbrowser.open(about.GITHUB_URL))
+        head = ttk.Frame(frm)
+        head.pack(anchor="w")
+        if ImageTk is not None:
+            self._img = ImageTk.PhotoImage(draw_icon("#2176FF", 56))
+            tk.Label(head, image=self._img, bg=P["bg"]).pack(side="left", padx=(0, 14))
+        t = ttk.Frame(head)
+        t.pack(side="left")
+        ttk.Label(t, text=about.APP_NAME, style="Title.TLabel").pack(anchor="w")
+        ttk.Label(t, text=f"Версия {about.VERSION} · {about.LICENSE}", style="Muted.TLabel").pack(anchor="w")
+        ttk.Label(frm, text=about.DESCRIPTION, justify="left").pack(anchor="w", pady=(14, 8))
+        link(frm, "↗ Исходный код на GitHub", about.GITHUB_URL).pack(anchor="w")
+        link(frm, "↗ Сайт программы", about.SITE_URL).pack(anchor="w")
+        ttk.Label(frm, text=about.LICENSE_TEXT, style="Muted.TLabel", justify="left"
+                  ).pack(anchor="w", pady=(12, 0))
+        ttk.Label(frm, text="Использует " + about.WINFSP_NOTICE, style="Muted.TLabel",
+                  justify="left").pack(anchor="w", pady=(10, 0))
+        link(frm, "↗ " + about.WINFSP_URL, about.WINFSP_URL).pack(anchor="w")
 
         d = about.DONATE
         if any(d.values()):
-            box = ttk.LabelFrame(frm, text="Поддержать автора", padding=10)
-            box.pack(fill="x", pady=(14, 0))
+            box = ttk.LabelFrame(frm, text="Поддержать автора", padding=12)
+            box.pack(fill="x", pady=(16, 0))
             ttk.Label(box, text="Если программа полезна — можно отблагодарить переводом\n"
                                 "по номеру телефона (СБП):", justify="left").grid(
-                row=0, column=0, columnspan=3, sticky="w", pady=(0, 6))
+                row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
             row = 1
-            for label, key in (("Получатель:", "name"), ("Банк:", "bank"), ("Телефон:", "phone")):
+            for label, key in (("Получатель", "name"), ("Банк", "bank"), ("Телефон", "phone")):
                 if not d.get(key):
                     continue
-                ttk.Label(box, text=label).grid(row=row, column=0, sticky="w", padx=(0, 8))
-                e = ttk.Entry(box, width=26)
-                e.insert(0, d[key])
-                e.configure(state="readonly")
-                e.grid(row=row, column=1, sticky="w", pady=2)
+                ttk.Label(box, text=label, style="Muted.TLabel").grid(row=row, column=0, sticky="w",
+                                                                      padx=(0, 12), pady=2)
+                ttk.Label(box, text=d[key], font=(FONT, 10, "bold")).grid(row=row, column=1, sticky="w")
                 if key == "phone":
-                    ttk.Button(box, text="Копировать",
-                               command=lambda v=d[key]: self._copy(v)).grid(row=row, column=2, padx=(6, 0))
+                    ttk.Button(box, text="Копировать номер",
+                               command=lambda v=d[key]: self._copy(v)).grid(row=row, column=2, padx=(12, 0))
                 row += 1
             self.copied = ttk.Label(box, text="", foreground="#2a8a2a")
             self.copied.grid(row=row, column=0, columnspan=3, sticky="w")
-        ttk.Button(frm, text="Закрыть", command=self.destroy).pack(anchor="e", pady=(14, 0))
+        ttk.Button(frm, text="Закрыть", command=self.destroy).pack(anchor="e", pady=(16, 0))
+        dark_titlebar(self)
         self.grab_set()
 
     def _copy(self, value):
@@ -497,27 +542,28 @@ class ExitDialog(tk.Toplevel):
     """Ждёт, пока диски отправят изменения в облако, затем закрывает программу."""
 
     def __init__(self, app):
-        super().__init__(app.root)
+        super().__init__(app.root, bg=P["bg"])
         self.app = app
         self.title("CloudMount — выход")
         self.resizable(False, False)
         self.protocol("WM_DELETE_WINDOW", lambda: None)
-        frm = ttk.Frame(self, padding=16)
+        frm = ttk.Frame(self, padding=20)
         frm.pack()
-        ttk.Label(frm, text="Отправляю изменения в облако и отключаю диски…").pack(anchor="w")
+        ttk.Label(frm, text="Отправляю изменения в облако и отключаю диски…", style="H2.TLabel").pack(anchor="w")
         self.var = tk.StringVar()
-        ttk.Label(frm, textvariable=self.var, foreground="#555", wraplength=360).pack(anchor="w", pady=8)
+        ttk.Label(frm, textvariable=self.var, style="Muted.TLabel", wraplength=380).pack(anchor="w", pady=10)
         ttk.Button(frm, text="Выйти сразу", command=self._force).pack(anchor="e")
+        dark_titlebar(self)
         self.after(300, self._wait)
 
     def _wait(self):
-        self.app.mm.poll()
-        if not self.app.mm.any_running():
+        mm = self.app.mm
+        mm.poll()
+        if not mm.any_running():
             self.app.finish()
             return
-        parts = [f"{a['name']}: {self.app.mm.status(a)}" for a in self.app.accounts
-                 if self.app.mm.running(a["id"])]
-        self.var.set("\n".join(parts))
+        self.var.set("\n".join(f"{a['name']}: {mm.card(a)['note']}" for a in self.app.accounts
+                               if mm.running(a["id"])))
         self.after(500, self._wait)
 
     def _force(self):
@@ -528,55 +574,133 @@ class ExitDialog(tk.Toplevel):
             self.app.finish()
 
 
+# ---------------- карточка диска ----------------
+class DriveCard(tk.Frame):
+    def __init__(self, master, app, acc):
+        super().__init__(master, bg=P["card"], highlightthickness=1,
+                         highlightbackground=P["line"], padx=16, pady=14)
+        self.app, self.acc = app, acc
+        cls = PROVIDERS[acc["type"]]
+        top = tk.Frame(self, bg=P["card"])
+        top.pack(fill="x")
+        img = tile_image(cls, 44)
+        if img is not None:
+            tk.Label(top, image=img, bg=P["card"]).pack(side="left", padx=(0, 12))
+        names = tk.Frame(top, bg=P["card"])
+        names.pack(side="left", fill="x", expand=True)
+        tk.Label(names, text=acc.get("name") or cls.title, bg=P["card"], fg=P["ink"],
+                 font=(FONT, 11, "bold"), anchor="w").pack(anchor="w")
+        tk.Label(names, text=f"{(acc.get('letter') or '?').upper()}: · {cls.title}", bg=P["card"],
+                 fg=P["muted"], font=(FONT, 9), anchor="w").pack(anchor="w")
+        self.chip = tk.Label(top, text="", font=(FONT, 9, "bold"), padx=10, pady=2)
+        self.chip.pack(side="right", anchor="n")
+        self.bar = ttk.Progressbar(self, mode="determinate", maximum=100)
+        self.bar.pack(fill="x", pady=(12, 4))
+        self.note = tk.Label(self, text="", bg=P["card"], fg=P["muted"], font=(FONT, 9), anchor="w")
+        self.note.pack(fill="x")
+        btns = tk.Frame(self, bg=P["card"])
+        btns.pack(fill="x", pady=(10, 0))
+        self.more = ttk.Menubutton(btns, text="⋯", width=3)
+        menu = tk.Menu(self.more, tearoff=0)
+        menu.add_command(label="Настройки", command=lambda: app.edit(acc["id"]))
+        menu.add_command(label="Журнал", command=lambda: app.show_log(acc["id"]))
+        menu.add_separator()
+        menu.add_command(label="Удалить диск", command=lambda: app.remove(acc["id"]))
+        self.more["menu"] = menu
+        self.more.pack(side="right", padx=(6, 0))
+        self.primary = ttk.Button(btns, text="", width=11)
+        self.primary.pack(side="right", padx=(6, 0))
+        self.secondary = ttk.Button(btns, text="", width=11)
+        self.secondary.pack(side="right")
+        self._state = None
+        self.refresh()
+
+    def refresh(self):
+        mm, aid = self.app.mm, self.acc["id"]
+        c = mm.card(self.acc)
+        bg, fg = P.get(c["state"], P["off"]) if c["state"] in ("ok", "busy", "off", "error") else P["off"]
+        self.chip.configure(text=c["chip"], bg=bg, fg=fg)
+        self.bar["value"] = c["progress"]
+        self.note.configure(text=c["note"])
+        running = mm.running(aid)
+        state = (running, aid in mm.stopping)
+        if state != self._state:
+            self._state = state
+            if running:
+                self.secondary.configure(text="Отключить", command=lambda: self.app.unmount(aid),
+                                         style="TButton")
+                self.primary.configure(text="Открыть", command=lambda: self.app.open_drive(aid),
+                                       style="TButton")
+            else:
+                self.secondary.configure(text="Настройки", command=lambda: self.app.edit(aid),
+                                         style="TButton")
+                self.primary.configure(text="Подключить", command=lambda: self.app.mount(aid),
+                                       style="Accent.TButton")
+
+
 # ---------------- главное окно ----------------
 class App:
     def __init__(self, minimized=False):
         self.root = tk.Tk()
-        self.root.title("CloudMount — облачные диски")
-        self.root.geometry("720x380")
-        self.root.minsize(600, 300)
+        self._icons: dict = {}
+        apply_theme(self.root)
+        set_window_icon(self.root, self._icons)
         enable_clipboard(self.root)
-        if IS_WIN:
-            try:
-                self.root.iconbitmap(default=resource("assets", "icon.ico"))
-            except tk.TclError:
-                pass
+        self.root.title("CloudMount")
+        self.root.geometry("980x660")
+        self.root.minsize(640, 460)
         self.mm = MountManager()
         self.q: queue.Queue = queue.Queue()
         self.accounts = config.load_accounts()
+        self.cards: dict[str, DriveCard] = {}
         self.icon = None
 
-        top = ttk.Frame(self.root, padding=8)
-        top.pack(fill="both", expand=True)
-        cols = ("name", "type", "letter", "status")
-        self.tree = ttk.Treeview(top, columns=cols, show="headings", selectmode="browse")
-        for c, t, w in zip(cols, ("Название", "Облако", "Диск", "Состояние"), (180, 150, 60, 280)):
-            self.tree.heading(c, text=t)
-            self.tree.column(c, width=w, anchor="w")
-        self.tree.pack(fill="both", expand=True)
-        self.tree.bind("<Double-1>", lambda e: self.toggle())
+        main = ttk.Frame(self.root, padding=(28, 20, 28, 14))
+        main.pack(fill="both", expand=True)
+        head = ttk.Frame(main)
+        head.pack(fill="x")
+        titles = ttk.Frame(head)
+        titles.pack(side="left")
+        ttk.Label(titles, text="Мои диски", style="Title.TLabel").pack(anchor="w")
+        self.subtitle = ttk.Label(titles, text="", style="Muted.TLabel")
+        self.subtitle.pack(anchor="w")
+        ttk.Button(head, text="＋  Добавить облако", style="Accent.TButton",
+                   command=self.add).pack(side="right")
 
-        bar = ttk.Frame(top)
-        bar.pack(fill="x", pady=(8, 0))
-        for text, cmd in (("Добавить", self.add), ("Изменить", self.edit), ("Удалить", self.remove),
-                          ("Подключить", self.mount_sel), ("Отключить", self.unmount_sel),
-                          ("Открыть", self.open_sel), ("Журнал", self.show_log)):
-            ttk.Button(bar, text=text, command=cmd).pack(side="left", padx=2)
+        self.area = Scrollable(main, P["bg"])
+        self.area.pack(fill="both", expand=True, pady=(16, 10))
+        for i in (0, 1):
+            self.area.inner.grid_columnconfigure(i, weight=1, uniform="c")
 
-        bottom = ttk.Frame(top)
-        bottom.pack(fill="x", pady=(8, 0))
+        foot = ttk.Frame(main)
+        foot.pack(fill="x")
+        ttk.Separator(main).pack(fill="x", before=foot, pady=(0, 10))
         self.autostart_var = tk.BooleanVar(value=self._autostart_get())
-        ttk.Checkbutton(bottom, text="Запускать вместе с Windows", variable=self.autostart_var,
-                        command=self._autostart_set).pack(side="left")
-        ttk.Button(bottom, text="О программе", command=self.show_about).pack(side="right")
+        style = "Switch.TCheckbutton" if sv_ttk is not None else "TCheckbutton"
+        ttk.Checkbutton(foot, text="Запускать вместе с Windows", variable=self.autostart_var,
+                        command=self._autostart_set, style=style).pack(side="left")
+        lk = link(foot, "О программе", "", bg=P["bg"])
+        lk.configure(fg=P["muted"], font=(FONT, 10))
+        lk.unbind("<Button-1>")
+        lk.bind("<Button-1>", lambda e: self.show_about())
+        lk.pack(side="right")
+        lg = link(foot, "Журналы", "", bg=P["bg"])
+        lg.configure(fg=P["muted"], font=(FONT, 10))
+        lg.unbind("<Button-1>")
+        lg.bind("<Button-1>", lambda e: open_path(config.local_dir("logs")))
+        lg.pack(side="right", padx=18)
 
         self.root.protocol("WM_DELETE_WINDOW", self.hide)
-        self._setup_tray()
-        self.refresh_list()
-        self._check_winfsp()
-        for a in self.accounts:
-            if a.get("automount"):
-                self.mm.mount(a)
+        self.root.bind("<Unmap>", self._on_unmap)
+        if not TEST_MODE:
+            self._setup_tray()
+        self.rebuild()
+        dark_titlebar(self.root)
+        if not TEST_MODE:
+            self._check_winfsp()
+            for a in self.accounts:
+                if a.get("automount"):
+                    self.mm.mount(a)
         if minimized and self.icon is not None:
             self.root.withdraw()
         self.root.after(1000, self._tick)
@@ -587,27 +711,30 @@ class App:
             return
         put = self.q.put
         menu = pystray.Menu(
-            pystray.MenuItem("Открыть", lambda i, it: put(self.show), default=True),
+            pystray.MenuItem("Открыть CloudMount", lambda i, it: put(self.show), default=True),
             pystray.MenuItem("Подключить все", lambda i, it: put(self.mount_all)),
             pystray.MenuItem("Отключить все", lambda i, it: put(self.mm.unmount_all)),
             pystray.MenuItem("О программе", lambda i, it: put(self.show_about)),
+            pystray.Menu.SEPARATOR,
             pystray.MenuItem("Выход", lambda i, it: put(self.quit)),
         )
-        self.icon = pystray.Icon("CloudMount", load_icon_image(), "CloudMount", menu)
+        self.icon = pystray.Icon("CloudMount", draw_icon("#2176FF", 64), "CloudMount", menu)
         self.icon.run_detached()
 
-    def show_about(self):
-        self.show()
-        AboutDialog(self.root)
+    def _on_unmap(self, event):
+        # «Свернуть» тоже убирает окно в трей
+        if event.widget is self.root and self.icon is not None and self.root.state() == "iconic":
+            self.root.after(10, self.root.withdraw)
 
     def show(self):
         self.root.deiconify()
+        self.root.state("normal")
         self.root.lift()
         self.root.focus_force()
 
     def hide(self):
         if self.icon is None:
-            if messagebox.askyesno("CloudMount", "Выйти и отключить все диски?"):
+            if TEST_MODE or messagebox.askyesno("CloudMount", "Выйти и отключить все диски?"):
                 self.quit()
         else:
             self.root.withdraw()
@@ -626,16 +753,30 @@ class App:
             self.icon.stop()
         self.root.destroy()
 
-    # ----- список -----
-    def refresh_list(self):
-        sel = self.tree.selection()
-        self.tree.delete(*self.tree.get_children())
-        for a in self.accounts:
-            self.tree.insert("", "end", iid=a["id"], values=(
-                a.get("name"), PROVIDERS[a["type"]].title,
-                (a.get("letter") or "") + ":", self.mm.status(a)))
-        if sel and self.tree.exists(sel[0]):
-            self.tree.selection_set(sel)
+    # ----- карточки -----
+    def rebuild(self):
+        for w in self.area.inner.winfo_children():
+            w.destroy()
+        self.cards = {}
+        if not self.accounts:
+            empty = tk.Frame(self.area.inner, bg=P["bg"], pady=60)
+            empty.grid(row=0, column=0, columnspan=2)
+            tk.Label(empty, text="Пока нет ни одного диска", bg=P["bg"], fg=P["ink"],
+                     font=(FONT, 14, "bold")).pack()
+            tk.Label(empty, text="Нажмите «Добавить облако», чтобы подключить первое хранилище.",
+                     bg=P["bg"], fg=P["muted"], font=(FONT, 10)).pack(pady=(6, 14))
+            ttk.Button(empty, text="Добавить облако", style="Accent.TButton", command=self.add).pack()
+        for i, a in enumerate(self.accounts):
+            card = DriveCard(self.area.inner, self, a)
+            card.grid(row=i // 2, column=i % 2, sticky="nsew", padx=6, pady=6)
+            self.cards[a["id"]] = card
+        self._subtitle()
+
+    def _subtitle(self):
+        n = len(self.accounts)
+        on = sum(1 for a in self.accounts if self.mm.running(a["id"]))
+        self.subtitle.configure(text=f"Облаков: {n} · подключено: {on}" if n else
+                                "Облака как обычные диски Windows")
 
     def _tick(self):
         try:
@@ -646,104 +787,98 @@ class App:
         if not self.root.winfo_exists():
             return
         self.mm.poll()
-        for a in self.accounts:
-            if self.tree.exists(a["id"]):
-                self.tree.set(a["id"], "status", self.mm.status(a))
+        for card in self.cards.values():
+            card.refresh()
+        self._subtitle()
         self.root.after(1000, self._tick)
 
-    def selected(self) -> dict | None:
-        sel = self.tree.selection()
-        if not sel:
-            messagebox.showinfo("CloudMount", "Выберите диск в списке.")
-            return None
-        return next((a for a in self.accounts if a["id"] == sel[0]), None)
+    def _acc(self, acc_id):
+        return next((a for a in self.accounts if a["id"] == acc_id), None)
 
     def _taken(self, except_id=None) -> set[str]:
         return {(a.get("letter") or "").upper() for a in self.accounts if a["id"] != except_id}
 
+    def _reload(self):
+        self.accounts = config.load_accounts()
+        self.rebuild()
+
+    # ----- действия -----
     def add(self):
-        dlg = AccountDialog(self.root, None, self._taken())
+        pick = AddCloudDialog(self.root)
+        self.root.wait_window(pick)
+        if not pick.result:
+            return
+        acc = config.new_account(pick.result)
+        dlg = AccountDialog(self.root, acc, self._taken(), new=True)
         self.root.wait_window(dlg)
         if dlg.result:
             config.save_account(dlg.result)
-            self.accounts = config.load_accounts()
-            self.refresh_list()
+            self._reload()
             self.mm.mount(dlg.result)
 
-    def edit(self):
-        a = self.selected()
-        if not a:
+    def edit(self, acc_id):
+        a = config.get_account(acc_id) or self._acc(acc_id)
+        if a is None:
             return
-        # берём свежие данные (токен мог обновиться в процессе диска)
-        a = config.get_account(a["id"]) or a
-        dlg = AccountDialog(self.root, a, self._taken(a["id"]))
+        dlg = AccountDialog(self.root, a, self._taken(acc_id), new=False)
         self.root.wait_window(dlg)
         if dlg.result:
             config.save_account(dlg.result)
-            self.accounts = config.load_accounts()
-            self.refresh_list()
-            if self.mm.running(a["id"]):
-                self.mm.unmount(a["id"])
-                self.mm.restart[a["id"]] = dlg.result    # переподключим после отключения
+            self._reload()
+            if self.mm.running(acc_id):
+                self.mm.unmount(acc_id)
+                self.mm.restart[acc_id] = dlg.result     # переподключим после отключения
 
-    def remove(self):
-        a = self.selected()
+    def remove(self, acc_id):
+        a = self._acc(acc_id)
         if a and messagebox.askyesno("CloudMount", f"Удалить диск «{a['name']}»?\n"
                                      "Файлы в облаке не пострадают."):
-            self.mm.restart.pop(a["id"], None)
-            self.mm.unmount(a["id"])
-            config.delete_account(a["id"])
-            self.accounts = config.load_accounts()
-            self.refresh_list()
+            self.mm.restart.pop(acc_id, None)
+            self.mm.unmount(acc_id)
+            config.delete_account(acc_id)
+            self._reload()
 
-    def mount_sel(self):
-        a = self.selected()
+    def mount(self, acc_id):
+        a = self._acc(acc_id)
         if a:
             self.mm.mount(a)
 
-    def unmount_sel(self):
-        a = self.selected()
-        if not a or not self.mm.running(a["id"]):
+    def mount_all(self):
+        for a in self.accounts:
+            self.mm.mount(a)
+
+    def unmount(self, acc_id):
+        if not self.mm.running(acc_id):
             return
-        if a["id"] in self.mm.stopping:
+        if acc_id in self.mm.stopping:
             if messagebox.askyesno("CloudMount", "Диск ещё отправляет изменения в облако.\n"
                                    "Отключить принудительно? Изменения останутся на компьютере "
                                    "и догрузятся при следующем подключении."):
-                self.mm.unmount(a["id"], force=True)
+                self.mm.unmount(acc_id, force=True)
             return
-        opened = self.mm.info(a["id"]).get("open") or []
+        opened = self.mm.info(acc_id).get("open") or []
         if opened and not messagebox.askyesno(
                 "CloudMount", "Сейчас открыты файлы: " + ", ".join(opened[:3]) + "\n\n"
                 "Если это контейнер VeraCrypt — сначала отключите его в VeraCrypt,\n"
                 "иначе последние изменения могут не попасть в облако.\n\nВсё равно отключить диск?"):
             return
-        self.mm.unmount(a["id"])
+        self.mm.unmount(acc_id)
 
-    def toggle(self):
-        a = self.selected()
-        if a:
-            if self.mm.running(a["id"]):
-                self.open_sel()
-            else:
-                self.mm.mount(a)
-
-    def open_sel(self):
-        a = self.selected()
-        if a and a.get("letter") and self.mm.running(a["id"]):
+    def open_drive(self, acc_id):
+        a = self._acc(acc_id)
+        if a and a.get("letter") and self.mm.running(acc_id):
             open_path(f"{a['letter']}:\\")
 
-    def show_log(self):
-        a = self.selected()
-        if a:
-            p = log_path(a["id"])
-            if os.path.exists(p):
-                open_path(p)
-            else:
-                messagebox.showinfo("CloudMount", "Журнал пока пуст.")
+    def show_log(self, acc_id):
+        p = log_path(acc_id)
+        if os.path.exists(p):
+            open_path(p)
+        else:
+            messagebox.showinfo("CloudMount", "Журнал пока пуст.")
 
-    def mount_all(self):
-        for a in self.accounts:
-            self.mm.mount(a)
+    def show_about(self):
+        self.show()
+        AboutDialog(self.root)
 
     # ----- автозапуск / WinFsp -----
     @staticmethod
@@ -783,8 +918,8 @@ class App:
 
     def _check_winfsp(self):
         if IS_WIN and not winfsp_dll():
-            if messagebox.askyesno("CloudMount", "Для работы дисков нужен бесплатный драйвер WinFsp.\n"
-                                   "Открыть страницу загрузки?"):
+            if messagebox.askyesno("CloudMount", "Не найден драйвер WinFsp, без него диски не работают.\n"
+                                   "Обычно он ставится установщиком CloudMount. Открыть страницу WinFsp?"):
                 webbrowser.open("https://winfsp.dev/rel/")
 
     def run(self):
@@ -792,14 +927,20 @@ class App:
 
 
 def _single_instance() -> bool:
-    if not IS_WIN:
+    if not IS_WIN or TEST_MODE:
         return True
     import ctypes
-    ctypes.windll.kernel32.CreateMutexW(None, False, "CloudMount_single_instance")
+    _single_instance.handle = ctypes.windll.kernel32.CreateMutexW(None, False, "CloudMount_single_instance")
     return ctypes.windll.kernel32.GetLastError() != 183  # ERROR_ALREADY_EXISTS
 
 
 def run_gui(minimized=False):
+    if IS_WIN:
+        try:  # своя группа на панели задач и свой значок вместо значка Python
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("CloudMount.App")
+        except Exception:  # noqa: BLE001
+            pass
     if not _single_instance():
         r = tk.Tk()
         r.withdraw()

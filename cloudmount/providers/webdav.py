@@ -89,8 +89,12 @@ def parse_propfind(xml_bytes: bytes, base_path: str, req_path: str) -> list[Entr
 
 class WebDAVProvider(HttpProvider):
     kind = "webdav"
-    title = "WebDAV (другой сервер)"
+    title = "WebDAV"
+    note = "любой другой сервер"
+    tint = "#6B5BB0"
+    icon = "globe"
     default_url = ""
+    hint = "Любой сервер с WebDAV: адрес, логин и пароль."
     fields = [
         ("url", "Адрес WebDAV", False, ""),
         ("username", "Логин", False, ""),
@@ -170,8 +174,71 @@ class WebDAVProvider(HttpProvider):
 class BeelineProvider(WebDAVProvider):
     kind = "beeline"
     title = "Облако Билайн"
+    note = "WebDAV"
+    tint = "#B7791F"
+    icon = "cloud"
     default_url = "https://webdav.cloudbeeline.ru"
     fields = [
         ("username", "Логин (номер телефона)", False, ""),
         ("password", "Пароль WebDAV", True, ""),
     ]
+    hint = ("Включите WebDAV: «Профиль и настройки» → «Безопасность» →\n"
+            "«Доступ через WebDAV». Там же логин и пароль.")
+    links = [("Открыть Облако Билайн", "https://cloudbeeline.ru")]
+
+
+class MailruProvider(WebDAVProvider):
+    kind = "mailru"
+    title = "Облако Mail.ru"
+    note = "только платные тарифы"
+    tint = "#3E7FB8"
+    icon = "cloud"
+    default_url = "https://webdav.cloud.mail.ru"
+    fields = [
+        ("username", "Почта (полностью, с @mail.ru)", False, ""),
+        ("password", "Пароль для внешнего приложения", True, ""),
+    ]
+    hint = ("Mail.ru открывает WebDAV только на ПЛАТНЫХ тарифах Облака.\n"
+            "Создайте пароль для внешнего приложения с доступом к Облаку\n"
+            "(обычный пароль от почты не подойдёт).")
+    links = [("Mail ID → Безопасность → Пароли для внешних приложений", "https://id.mail.ru/security"),
+             ("Открыть Облако Mail.ru", "https://cloud.mail.ru/")]
+
+
+class KoofrProvider(WebDAVProvider):
+    kind = "koofr"
+    title = "Koofr"
+    note = "WebDAV, 10 ГБ бесплатно"
+    tint = "#4C7A3A"
+    icon = "cloud"
+    default_url = "https://app.koofr.net/dav/Koofr"
+    fields = [
+        ("username", "Почта", False, ""),
+        ("password", "Пароль приложения", True, ""),
+    ]
+    hint = ("Обычный пароль не подойдёт — создайте пароль приложения:\n"
+            "Preferences → Password → App passwords → Generate.")
+    links = [("Настройки Koofr", "https://app.koofr.net/app/admin/preferences/password")]
+
+
+class NextcloudProvider(WebDAVProvider):
+    kind = "nextcloud"
+    title = "Nextcloud"
+    note = "свой сервер, WebDAV"
+    tint = "#2B6CA8"
+    icon = "server"
+    fields = [
+        ("server", "Адрес сервера", False, "https://"),
+        ("username", "Пользователь", False, ""),
+        ("password", "Пароль приложения", True, ""),
+    ]
+    hint = ("Пароль приложения: Nextcloud → Настройки → Безопасность →\n"
+            "«Создать новый пароль приложения». Подходит и для ownCloud.")
+
+    def __init__(self, data, save=None):
+        server = (data.get("server") or "").rstrip("/")
+        if server and not server.startswith("http"):
+            server = "https://" + server
+        data["url"] = (f"{server}/remote.php/dav/files/"
+                       f"{urllib.parse.quote(data.get('username', ''))}")
+        super().__init__(data, save)

@@ -316,6 +316,7 @@ def test_delete_drops_pending(env):
 
 def test_statfs(env):
     _, f = env
+    f._refresh_quota()
     s = f.statfs("/")
     assert s["f_blocks"] * s["f_bsize"] == 10 * 2**30
     assert s["f_bavail"] * s["f_bsize"] == 9 * 2**30
@@ -327,3 +328,20 @@ def test_size_override(tmp_path):
     f = CloudFS(p, str(tmp_path / "c"), size_gb=10)
     s = f.statfs("/")
     assert s["f_blocks"] * s["f_bsize"] == 10 * 2**30
+
+
+def test_statfs_never_waits_for_server(tmp_path):
+    p = MemProvider()
+
+    def slow():
+        time.sleep(1.5)
+        return 5 * 2**30, 2**30
+    p.quota = slow
+    f = CloudFS(p, str(tmp_path / "c"))
+    t0 = time.time()
+    f.statfs("/")
+    assert time.time() - t0 < 0.3          # Проводник не ждёт медленный сервер
+    time.sleep(1.8)
+    s = f.statfs("/")
+    assert s["f_blocks"] * s["f_bsize"] == 5 * 2**30
+    assert f.status()["total"] == 5 * 2**30

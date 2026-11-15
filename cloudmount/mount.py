@@ -8,12 +8,11 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import sys
 import threading
 import time
 
-from . import config
+from . import config, winshell
 
 
 def setup_logging(acc_id: str) -> str:
@@ -47,7 +46,7 @@ def _write_status(acc_id: str, data: dict):
     os.replace(tmp, status_path(acc_id))
 
 
-def _service_threads(acc_id: str, fs, log):
+def _service_threads(acc_id: str, fs, log, cleanup=lambda: None):
     """Статус для окна программы, догрузка после сбоя, мягкое отключение."""
     state = {"stopping": False}
 
@@ -74,6 +73,7 @@ def _service_threads(acc_id: str, fs, log):
                 os.remove(p)
             except OSError:
                 pass
+        cleanup()
         logging.shutdown()
         os._exit(0)   # WinFsp сам отключит диск при завершении процесса
 
@@ -123,15 +123,34 @@ def run(acc_id: str) -> int:
     fs = CloudFS(provider, config.local_dir("cache", acc_id),
                  defer_large=acc.get("defer_large", True),
                  size_gb=float(acc.get("size_gb") or 0))
-    _service_threads(acc_id, fs, log)
     letter = (acc.get("letter") or "").strip(":").upper()
     mountpoint = f"{letter}:" if letter else config.local_dir("mnt", acc_id)
-    volname = (acc.get("name") or provider.title)[:32]
+    title = acc.get("name") or provider.title
+    volname = title[:32]
     opts = {"uid": -1, "gid": -1, "umask": 0, "volname": volname,
             "FileInfoTimeout": 2000, "DirInfoTimeout": 2000, "VolumeInfoTimeout": 30000}
+    share = None
     if sys.platform == "win32" and acc.get("netdrive", True) and letter:
-        share = re.sub(r"[^A-Za-z0-9_-]", "", acc["type"] + "-" + acc_id)
-        opts["VolumePrefix"] = f"/cloudmount/{share}"   # выглядит как сетевой диск
+        # читаемое сетевое имя: \\CloudMount\YandexDisk (а не тип и номер аккаунта)
+        share = winshell.share_name(title, acc["type"])
+        others = {winshell.share_name(a.get("name") or a["type"], a["type"]).lower()
+                  for a in config.load_accounts() if a["id"] != acc_id}
+        if share.lower() in others:
+            share = f"{share}-{letter}"
+        opts["VolumePrefix"] = f"/{winshell.SERVER}/{share}"
+    icon_path = acc.get("icon_path") or ""
+    if not (icon_path and os.path.exists(icon_path)):
+        try:
+            from .icons import ensure_ico
+            icon_path = ensure_ico(os.path.join(config.local_dir("icons"),
+                                                f"{acc['type']}-{provider.tint.lstrip('#')}.ico"),
+                                   provider.tint, provider.icon)
+        except Exception as e:  # noqa: BLE001
+            log.warning("Значок диска не создан: %s", e)
+            icon_path = ""
+    if letter:
+        winshell.apply(letter, share, title, icon_path or None)
+    _service_threads(acc_id, fs, log, cleanup=lambda: winshell.clear(letter))
     if sys.platform != "win32":
         opts = {}
     log.info("Подключаю %s (%s) как %s", volname, acc["type"], mountpoint)
@@ -145,5 +164,6 @@ def run(acc_id: str) -> int:
         except Exception as e2:  # noqa: BLE001
             log.exception("Ошибка FUSE: %s", e2)
             return 5
+    winshell.clear(letter)
     log.info("Диск отключён")
     return 0

@@ -62,6 +62,13 @@ class Provider:
     oauth = False
     # (ключ, подпись, секретное поле, значение по умолчанию)
     fields: list[tuple[str, str, bool, str]] = []
+    optional: set[str] = set()       # необязательные поля
+    hint = ""                        # подсказка в окне настройки
+    links: list[tuple[str, str]] = []   # кликабельные ссылки (текст, адрес)
+    tint = "#3B6FD8"                 # цвет значка
+    icon = "cloud"                   # cloud | server | bucket | globe
+    note = ""                        # короткая подпись на плитке
+    redirect_host = "127.0.0.1"      # адрес возврата для входа через браузер
 
     def __init__(self, data: dict, save=None):
         self.data = data            # настройки аккаунта (изменяемые: токены)
