@@ -340,8 +340,16 @@ def test_statfs_never_waits_for_server(tmp_path):
     f = CloudFS(p, str(tmp_path / "c"))
     t0 = time.time()
     f.statfs("/")
-    assert time.time() - t0 < 0.3          # Проводник не ждёт медленный сервер
+    assert time.time() - t0 < 2.5          # Проводник не ждёт медленный сервер дольше 2 с
     time.sleep(1.8)
     s = f.statfs("/")
     assert s["f_blocks"] * s["f_bsize"] == 5 * 2**30
     assert f.status()["total"] == 5 * 2**30
+
+
+def test_prefetch_quota_before_mount(tmp_path):
+    p = MemProvider()
+    f = CloudFS(p, str(tmp_path / "c"))
+    f.prefetch_quota()
+    s = f.statfs("/")                      # первый же запрос Проводника — с реальным размером
+    assert s["f_blocks"] * s["f_bsize"] == 10 * 2**30

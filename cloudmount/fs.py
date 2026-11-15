@@ -753,13 +753,28 @@ class CloudFS(Operations):
         finally:
             self._quota_busy = False
 
+    def prefetch_quota(self, timeout: float = 8.0):
+        """Узнать размер до подключения диска, чтобы Проводник сразу показал полосу.
+        Медленный сервер ждём не дольше timeout — дальше обновится в фоне."""
+        self._quota_busy = True
+        th = threading.Thread(target=self._refresh_quota, daemon=True, name="quota")
+        th.start()
+        th.join(timeout)
+
     def quota_cached(self) -> tuple[int, int]:
-        """Размер из кэша; обновление — в фоне, Проводник никогда не ждёт сервер."""
+        """Размер из кэша; обновление — в фоне, Проводник никогда долго не ждёт сервер."""
         t, q = self._quota
-        if time.time() - t > 120 and not getattr(self, "_quota_busy", False):
-            self._quota_busy = True
+        busy = getattr(self, "_quota_busy", False)
+        if time.time() - t > 120 and not busy:
+            self._quota_busy = busy = True
             threading.Thread(target=self._refresh_quota, daemon=True, name="quota").start()
-        return q
+        if t == 0 and busy:
+            # ещё ни разу не получали — подождём совсем немного
+            for _ in range(20):
+                time.sleep(0.1)
+                if self._quota[0]:
+                    return self._quota[1]
+        return self._quota[1]
 
     def disk_size(self) -> tuple[int, int]:
         total, used = self.quota_cached()

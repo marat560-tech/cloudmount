@@ -149,8 +149,13 @@ def run(acc_id: str) -> int:
             log.warning("Значок диска не создан: %s", e)
             icon_path = ""
     if letter:
+        winshell.forget_old_names()
         winshell.apply(letter, share, title, icon_path or None)
     _service_threads(acc_id, fs, log, cleanup=lambda: winshell.clear(letter))
+    fs.prefetch_quota()
+    total, used = fs.disk_size()
+    log.info("Размер диска: %.1f ГБ, занято %.1f ГБ%s", total / 2**30, used / 2**30,
+             "" if fs._quota[1][0] or fs.size_override else " (облако не сообщило размер)")
     if sys.platform != "win32":
         opts = {}
     log.info("Подключаю %s (%s) как %s", volname, acc["type"], mountpoint)

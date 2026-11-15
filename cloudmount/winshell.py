@@ -57,6 +57,32 @@ def apply(letter: str, share: str | None, label: str, icon_path: str | None):
         log.warning("Не удалось задать подпись/значок диска: %s", e)
 
 
+def forget_old_names():
+    """Убирает из кэша Проводника старые имена дисков (\\cloudmount\yandex-a7872ea34122)."""
+    if not IS_WIN:
+        return
+    import winreg
+    base = r"Software\Microsoft\Windows\CurrentVersion\Explorer\MountPoints2"
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, base) as k:
+            names, i = [], 0
+            while True:
+                try:
+                    names.append(winreg.EnumKey(k, i))
+                    i += 1
+                except OSError:
+                    break
+    except OSError:
+        return
+    for n in names:
+        # старый формат 1.x/2.0: ##cloudmount#<тип>-<12 hex>
+        if re.fullmatch(r"##cloudmount#[a-z0-9]+-[0-9a-f]{12}", n, flags=re.IGNORECASE):
+            try:
+                winreg.DeleteKey(winreg.HKEY_CURRENT_USER, base + "\\" + n)
+            except OSError:
+                pass
+
+
 def clear(letter: str):
     """Убирает значок с буквы, чтобы он не остался у другого диска с той же буквой."""
     if not IS_WIN or not letter:
