@@ -319,3 +319,11 @@ def test_statfs(env):
     s = f.statfs("/")
     assert s["f_blocks"] * s["f_bsize"] == 10 * 2**30
     assert s["f_bavail"] * s["f_bsize"] == 9 * 2**30
+
+
+def test_size_override(tmp_path):
+    p = MemProvider()
+    p.quota = lambda: (0, 0)
+    f = CloudFS(p, str(tmp_path / "c"), size_gb=10)
+    s = f.statfs("/")
+    assert s["f_blocks"] * s["f_bsize"] == 10 * 2**30

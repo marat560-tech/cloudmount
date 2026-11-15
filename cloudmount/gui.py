@@ -274,15 +274,23 @@ class AccountDialog(tk.Toplevel):
                              "отправлять в облако только при закрытии"
                         ).grid(row=5, column=1, sticky="w")
 
+        size_row = ttk.Frame(frm)
+        size_row.grid(row=6, column=1, sticky="w", pady=(4, 0))
+        self.size_var = tk.StringVar(value=str(self.acc.get("size_gb") or ""))
+        ttk.Entry(size_row, textvariable=self.size_var, width=7).pack(side="left")
+        ttk.Label(size_row, text=" ГБ — размер диска (пусто = как сообщает облако)"
+                  ).pack(side="left")
+        ttk.Label(frm, text="Размер:").grid(row=6, column=0, sticky="w", pady=(4, 0))
+
         self.fields_frame = ttk.LabelFrame(frm, text="Подключение", padding=8)
-        self.fields_frame.grid(row=6, column=0, columnspan=2, sticky="we", pady=(8, 4))
+        self.fields_frame.grid(row=7, column=0, columnspan=2, sticky="we", pady=(8, 4))
 
         self.status_var = tk.StringVar()
         ttk.Label(frm, textvariable=self.status_var, foreground="#555", wraplength=380
-                  ).grid(row=7, column=0, columnspan=2, sticky="w", pady=4)
+                  ).grid(row=8, column=0, columnspan=2, sticky="w", pady=4)
 
         btns = ttk.Frame(frm)
-        btns.grid(row=8, column=0, columnspan=2, sticky="e", pady=(6, 0))
+        btns.grid(row=9, column=0, columnspan=2, sticky="e", pady=(6, 0))
         ttk.Button(btns, text="Проверить", command=self._test).pack(side="left", padx=3)
         ttk.Button(btns, text="Сохранить", command=self._ok).pack(side="left", padx=3)
         ttk.Button(btns, text="Отмена", command=self._close).pack(side="left", padx=3)
@@ -362,7 +370,11 @@ class AccountDialog(tk.Toplevel):
                 p = make_provider(acc)
                 n = len(p.list_dir("/"))
                 total, used = p.quota()
-                q = f", занято {used / 2**30:.1f} из {total / 2**30:.1f} ГБ" if total else ""
+                if total:
+                    q = f", занято {used / 2**30:.1f} из {total / 2**30:.1f} ГБ"
+                else:
+                    q = (", облако не сообщает свой размер — укажите его в поле «Размер»"
+                         + (f" (занято {used / 2**30:.1f} ГБ)" if used else ""))
                 self.q.put(("info", f"Работает ✓ В корне объектов: {n}{q}"))
             except Exception as e:  # noqa: BLE001
                 self.q.put(("info", f"Ошибка: {e}"))
@@ -395,10 +407,18 @@ class AccountDialog(tk.Toplevel):
         if cls.oauth and not self.token:
             messagebox.showwarning("CloudMount", "Нажмите «Войти через браузер».", parent=self)
             return
+        size_txt = self.size_var.get().strip().replace(",", ".")
+        try:
+            size_gb = float(size_txt) if size_txt else 0.0
+            if size_gb < 0:
+                raise ValueError
+        except ValueError:
+            messagebox.showwarning("CloudMount", "Размер диска — число в гигабайтах, например 10.", parent=self)
+            return
         acc = dict(self.acc)
         acc.update(type=self.kind, name=self.name_var.get().strip() or cls.title,
                    letter=self.letter_var.get(), automount=self.auto_var.get(),
-                   netdrive=self.net_var.get(), defer_large=self.defer_var.get(), data=d)
+                   netdrive=self.net_var.get(), defer_large=self.defer_var.get(), size_gb=size_gb, data=d)
         self.result = acc
         self._close()
 

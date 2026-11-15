@@ -200,3 +200,35 @@ def test_gdrive_path_resolution_and_upload():
     e = p.upload("/Работа/new.txt", None, io.BytesIO(b"hi"), 2)
     assert e.id == "n1" and p._id("/Работа/new.txt") == "n1"
     assert all("Authorization" in x[2] for x in r.log)
+
+
+def test_webdav_quota_variants():
+    from cloudmount.providers.webdav import parse_quota
+    std = b"""<d:multistatus xmlns:d="DAV:"><d:response><d:propstat><d:prop>
+<d:quota-available-bytes>8589934592</d:quota-available-bytes>
+<d:quota-used-bytes>2147483648</d:quota-used-bytes></d:prop></d:propstat></d:response></d:multistatus>"""
+    assert parse_quota(std) == (10 * 2**30, 2 * 2**30)
+    other_ns = b"""<D:multistatus xmlns:D="DAV:" xmlns:x="urn:x"><D:response><D:propstat><D:prop>
+<x:quota-used-bytes>100</x:quota-used-bytes><x:quota-available-bytes>900</x:quota-available-bytes>
+</D:prop></D:propstat></D:response></D:multistatus>"""
+    assert parse_quota(other_ns) == (1000, 100)
+    unlimited = b"""<d:multistatus xmlns:d="DAV:"><d:response><d:propstat><d:prop>
+<d:quota-available-bytes>-3</d:quota-available-bytes><d:quota-used-bytes>5</d:quota-used-bytes>
+</d:prop></d:propstat></d:response></d:multistatus>"""
+    assert parse_quota(unlimited) == (0, 5)
+    assert parse_quota(b'<d:multistatus xmlns:d="DAV:"/>') == (0, 0)
+
+
+def test_webdav_quota_falls_back_to_allprop():
+    p = make_provider({"type": "beeline", "data": {"username": "u", "password": "p"}})
+    bodies = []
+
+    def h(m, url, hdr, body):
+        bodies.append(body)
+        if b"allprop" in body:
+            return 207, b"""<d:multistatus xmlns:d="DAV:"><d:response><d:propstat><d:prop>
+<d:quota-available-bytes>7</d:quota-available-bytes><d:quota-used-bytes>3</d:quota-used-bytes>
+</d:prop></d:propstat></d:response></d:multistatus>""", {}
+        return 207, b'<d:multistatus xmlns:d="DAV:"/>', {}
+    attach(p, h)
+    assert p.quota() == (10, 3) and len(bodies) == 2

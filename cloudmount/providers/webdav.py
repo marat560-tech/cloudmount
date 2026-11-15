@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import email.utils
+import logging
 import urllib.parse
 import xml.etree.ElementTree as ET
 
 from .base import AlreadyExists, Entry, HttpProvider, NotFound, ProviderError
 
 NS = "{DAV:}"
+log = logging.getLogger(__name__)
 
 PROPFIND_BODY = b"""<?xml version="1.0" encoding="utf-8"?>
 <d:propfind xmlns:d="DAV:"><d:prop>
@@ -18,6 +20,28 @@ QUOTA_BODY = b"""<?xml version="1.0" encoding="utf-8"?>
 <d:propfind xmlns:d="DAV:"><d:prop>
 <d:quota-available-bytes/><d:quota-used-bytes/>
 </d:prop></d:propfind>"""
+
+
+ALLPROP_BODY = b"""<?xml version="1.0" encoding="utf-8"?>
+<d:propfind xmlns:d="DAV:"><d:allprop/></d:propfind>"""
+
+
+def parse_quota(xml_bytes: bytes) -> tuple[int, int]:
+    """Ищет quota-available-bytes / quota-used-bytes в любом пространстве имён."""
+    vals = {}
+    for el in ET.fromstring(xml_bytes).iter():
+        name = el.tag.rsplit("}", 1)[-1].lower()
+        text = (el.text or "").strip()
+        if name in ("quota-available-bytes", "quota-used-bytes", "quota-total-bytes") \
+                and text.lstrip("-").isdigit() and name not in vals:
+            vals[name] = int(text)
+    used = max(vals.get("quota-used-bytes", 0), 0)
+    if vals.get("quota-total-bytes", -1) > 0:
+        return vals["quota-total-bytes"], used
+    avail = vals.get("quota-available-bytes", -1)
+    if avail >= 0 and (avail or used):
+        return used + avail, used
+    return 0, used
 
 
 def _ts(s: str | None) -> float:
@@ -127,18 +151,20 @@ class WebDAVProvider(HttpProvider):
                               "Overwrite": "T"})
 
     def quota(self):
-        try:
-            r = self.request("PROPFIND", self.url("/", slash=True), data=QUOTA_BODY,
-                             headers={"Depth": "0", "Content-Type": "application/xml"})
-            root = ET.fromstring(r.content)
-            avail = root.findtext(f".//{NS}quota-available-bytes")
-            used = root.findtext(f".//{NS}quota-used-bytes")
-            if avail and used:
-                used_i = int(used)
-                return used_i + int(avail), used_i
-        except Exception:
-            pass
-        return 0, 0
+        used = 0
+        for body in (QUOTA_BODY, ALLPROP_BODY):
+            try:
+                r = self.request("PROPFIND", self.url("/", slash=True), data=body,
+                                 headers={"Depth": "0", "Content-Type": "application/xml"})
+                total, used2 = parse_quota(r.content)
+            except Exception as e:  # noqa: BLE001
+                log.info("WebDAV: запрос квоты не удался: %s", e)
+                continue
+            used = used or used2
+            if total:
+                return total, used
+            log.info("WebDAV: сервер не сообщил размер. Ответ: %s", r.text[:600])
+        return 0, used
 
 
 class BeelineProvider(WebDAVProvider):

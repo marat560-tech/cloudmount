@@ -121,7 +121,8 @@ def run(acc_id: str) -> int:
         except OSError:
             pass
     fs = CloudFS(provider, config.local_dir("cache", acc_id),
-                 defer_large=acc.get("defer_large", True))
+                 defer_large=acc.get("defer_large", True),
+                 size_gb=float(acc.get("size_gb") or 0))
     _service_threads(acc_id, fs, log)
     letter = (acc.get("letter") or "").strip(":").upper()
     mountpoint = f"{letter}:" if letter else config.local_dir("mnt", acc_id)

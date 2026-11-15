@@ -296,11 +296,12 @@ class FileState:
 
 class CloudFS(Operations):
     def __init__(self, provider, cache_dir: str, dir_ttl: float = 60.0,
-                 defer_large: bool = True):
+                 defer_large: bool = True, size_gb: float = 0):
         self.p = provider
         self.cache_dir = cache_dir
         os.makedirs(cache_dir, exist_ok=True)
         self.defer_large = defer_large
+        self.size_override = int(size_gb * 2**30) if size_gb else 0
         self.upload_state = (None, 0, 0)          # (имя, отправлено, всего)
         self._clean_cache()
         self.ttl = dir_ttl
@@ -750,8 +751,10 @@ class CloudFS(Operations):
                 log.debug("quota: %s", e)
             self._quota = (time.time(), (total, used))
         bs = 4096
-        if total <= 0:
-            total = max(used, 0) + (1 << 40)
+        if self.size_override:
+            total = self.size_override          # размер задан вручную в настройках
+        elif total <= 0:
+            total = max(used, 0) + (1 << 40)    # облако не сообщает — условный 1 ТБ
         free = max(total - used, 0)
         return {"f_bsize": bs, "f_frsize": bs, "f_blocks": total // bs,
                 "f_bfree": free // bs, "f_bavail": free // bs,
