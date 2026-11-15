@@ -68,6 +68,49 @@ def open_path(p: str):
         webbrowser.open("file://" + p)
 
 
+# ---------------- буфер обмена ----------------
+# Tk не понимает Ctrl+V/C/X/A при русской раскладке (keysym другой), а меню по
+# правой кнопке у полей ввода нет. Добавляем и то, и другое для всех полей.
+_KEYCODES = {86: "<<Paste>>", 67: "<<Copy>>", 88: "<<Cut>>"}   # V, C, X (коды Windows)
+
+
+def _on_ctrl_key(event):
+    w = event.widget
+    if event.keycode == 65:                       # Ctrl+A — выделить всё
+        try:
+            w.select_range(0, "end")
+            w.icursor("end")
+        except tk.TclError:
+            pass
+        return "break"
+    virtual = _KEYCODES.get(event.keycode)
+    if virtual and event.keysym.lower() not in ("v", "c", "x"):
+        w.event_generate(virtual)                 # не латинская раскладка
+        return "break"
+    return None
+
+
+def _show_menu(event):
+    w = event.widget
+    readonly = str(w.cget("state")) in ("readonly", "disabled")
+    m = tk.Menu(w, tearoff=0)
+    m.add_command(label="Вырезать", state="disabled" if readonly else "normal",
+                  command=lambda: w.event_generate("<<Cut>>"))
+    m.add_command(label="Копировать", command=lambda: w.event_generate("<<Copy>>"))
+    m.add_command(label="Вставить", state="disabled" if readonly else "normal",
+                  command=lambda: w.event_generate("<<Paste>>"))
+    m.add_separator()
+    m.add_command(label="Выделить всё", command=lambda: w.select_range(0, "end"))
+    w.focus_set()
+    m.tk_popup(event.x_root, event.y_root)
+
+
+def enable_clipboard(root: tk.Misc):
+    for cls in ("TEntry", "Entry", "TCombobox"):
+        root.bind_class(cls, "<Control-KeyPress>", _on_ctrl_key, add="+")
+        root.bind_class(cls, "<Button-3>", _show_menu, add="+")
+
+
 # ---------------- монтирование ----------------
 class MountManager:
     """Процессы дисков. Отключение — мягкое: процесс сначала отправляет изменения."""
@@ -472,6 +515,7 @@ class App:
         self.root.title("CloudMount — облачные диски")
         self.root.geometry("720x380")
         self.root.minsize(600, 300)
+        enable_clipboard(self.root)
         if IS_WIN:
             try:
                 self.root.iconbitmap(default=resource("assets", "icon.ico"))
